@@ -13,6 +13,7 @@
     "start": "node --env-file-if-exists=.env dist/server/server/index.js",
     "browser": "node --env-file-if-exists=.env --import tsx src/browser/index.ts",
     "browser:start": "node --env-file-if-exists=.env dist/server/browser/index.js",
+    "chatgpt-plan": "node --env-file-if-exists=.env --import tsx src/server/chatgpt-plan-cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests vite.config.ts",
@@ -78,5 +79,8 @@
   },
   "overrides": {
     "undici": "^6.29.0"
+  },
+  "optionalDependencies": {
+    "@napi-rs/keyring": "2.1.0"
   }
 }

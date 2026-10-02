@@ -3,12 +3,26 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ephemeralCredentialEncryption } from './ephemeral-encryption.js';
 import {
   ChatGPTPlanError,
   type ChatGPTPlanAuth,
   type ChatGPTPlanModel,
 } from './chatgpt-plan.js';
+import {
+  credentialFailureHint,
+  type CredentialStoreErrorCode,
+} from './credential-errors.js';
+import {
+  KeychainKeyBackend,
+  defaultStateDir,
+  openPersistentKey,
+  type KeyBackend,
+} from './credential-keys.js';
+import { ensurePrivateDir } from './private-fs.js';
+import {
+  memoryKeySource,
+  sealedCredentialEncryption,
+} from './sealed-encryption.js';
 
 // Adapter for the Sign in with ChatGPT DevKit. The DevKit is a separate,
 // noncommercially licensed project: OpenDots neither bundles nor copies it. It
@@ -25,14 +39,21 @@ import {
 interface DevKitSession {
   status: string;
   sharing: boolean;
+  error?: { code: string; message: string };
+}
+interface DevKitProfile {
+  id: string;
+  requiresNewRegistration?: boolean;
 }
 interface DevKitClient {
   signIn(options?: {
     newProfile?: boolean;
+    profileId?: string;
     label?: string;
     signal?: AbortSignal;
   }): Promise<DevKitSession>;
   getSession(): Promise<DevKitSession>;
+  listProfiles(): Promise<DevKitProfile[]>;
   listModels(options?: { signal?: AbortSignal }): Promise<ChatGPTPlanModel[]>;
   disconnect(): Promise<void>;
 }
@@ -40,15 +61,19 @@ interface DevKitStore {
   withLock<T>(operation: () => Promise<T>): Promise<T>;
   read(): Promise<unknown>;
 }
+type Encryption = ReturnType<typeof sealedCredentialEncryption>;
 interface DevKit {
   createChatGPT(config: Record<string, unknown>): DevKitClient;
   ConnectionStore: new (
     directory: string,
-    encryption: ReturnType<typeof ephemeralCredentialEncryption>,
+    encryption: Encryption,
   ) => DevKitStore;
 }
 
 const REFRESH_MARGIN_MS = 120_000;
+const EPHEMERAL_ID = 'opendots-ephemeral-aes-256-gcm-v1';
+export const KEYCHAIN_ENCRYPTION_ID = 'opendots-keychain-aes-256-gcm-v1';
+const KEYCHAIN_ID = KEYCHAIN_ENCRYPTION_ID;
 
 async function loadDevKit(distDir: string): Promise<DevKit> {
   const dist = resolve(distDir);
@@ -74,18 +99,6 @@ async function loadDevKit(distDir: string): Promise<DevKit> {
   }
 }
 
-// DevKit errors carry a code, a user-safe message and a retryable flag.
-function toPlanError(error: unknown, signal?: AbortSignal): unknown {
-  if (signal?.aborted || !(error instanceof Error)) return error;
-  const { code, retryable } = error as { code?: unknown; retryable?: unknown };
-  if (typeof code !== 'string' || code === 'cancelled') return error;
-  return new ChatGPTPlanError(
-    code,
-    error.message,
-    retryable === true ? 503 : /sign_in|sharing|reauth/.test(code) ? 401 : 502,
-  );
-}
-
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null
     ? (value as Record<string, unknown>)
@@ -106,31 +119,117 @@ async function readAccessToken(store: DevKitStore) {
     : undefined;
 }
 
+// Whether the owner, not the model, has to act before this can work.
+export type ChatGPTPlanStatus =
+  | { state: 'signed_in' | 'signed_out' }
+  | { state: 'unavailable'; failure: { code: string; hint: string } };
+
 export interface ChatGPTPlanSession {
+  readonly credentialStore: 'ephemeral' | 'keychain';
   auth: ChatGPTPlanAuth;
-  isSignedIn(): Promise<boolean>;
+  /** Reads the saved session. Never opens a browser. */
+  status(): Promise<ChatGPTPlanStatus>;
+  /** Opens the browser. Reuses a saved profile rather than registering another. */
   signIn(signal?: AbortSignal): Promise<void>;
-  dispose(): Promise<void>;
+  /** Revokes the tokens remotely and clears them locally; keeps the key and registration. */
+  signOut(): Promise<{ revoked: boolean }>;
+  /**
+   * Releases this process's resources. A persistent session stays signed in:
+   * nothing is revoked, deleted, or removed from the Keychain. An ephemeral
+   * session has no future, so it also signs out and deletes its temporary state.
+   */
+  close(): Promise<void>;
 }
 
-export async function createChatGPTPlanSession(options: {
+export interface ChatGPTPlanSessionOptions {
   devkitDist: string;
-}): Promise<ChatGPTPlanSession> {
+  /** Defaults to ephemeral: the sign-in does not outlive the process. */
+  credentialStore?: 'ephemeral' | 'keychain';
+  /** Keychain mode. Defaults to ~/Library/Application Support/OpenDots/chatgpt-plan. */
+  stateDir?: string;
+  /** Keychain mode: a replacement for the macOS Keychain (tests). */
+  keyBackend?: KeyBackend;
+  openBrowser?: (url: string) => Promise<void> | void;
+}
+
+export async function createChatGPTPlanSession(
+  options: ChatGPTPlanSessionOptions,
+): Promise<ChatGPTPlanSession> {
   const devkit = await loadDevKit(options.devkitDist);
-  const encryption = ephemeralCredentialEncryption();
-  const storageDir = await mkdtemp(join(tmpdir(), 'opendots-chatgpt-'));
-  // Last resort if the process exits without a graceful dispose().
-  const removeStorageDir = () =>
-    rmSync(storageDir, { recursive: true, force: true });
-  process.once('exit', removeStorageDir);
+  const credentialStore = options.credentialStore ?? 'ephemeral';
+
+  let failure: CredentialStoreErrorCode | undefined;
+  const onFailure = (code: CredentialStoreErrorCode | undefined) => {
+    failure = code;
+  };
+  let storageDir: string;
+  let encryption: Encryption;
+  let removeStorageDir: (() => void) | undefined;
+  if (credentialStore === 'keychain') {
+    const backend = options.keyBackend ?? (await KeychainKeyBackend.create());
+    const stateDir = options.stateDir ?? defaultStateDir();
+    await ensurePrivateDir(stateDir);
+    storageDir = stateDir;
+    encryption = sealedCredentialEncryption({
+      id: KEYCHAIN_ID,
+      openKey: () => openPersistentKey({ stateDir, backend }),
+      onFailure,
+    });
+  } else {
+    const directory = await mkdtemp(join(tmpdir(), 'opendots-chatgpt-'));
+    storageDir = directory;
+    encryption = sealedCredentialEncryption({
+      id: EPHEMERAL_ID,
+      openKey: memoryKeySource(),
+    });
+    // Last resort if the process exits without a graceful close().
+    removeStorageDir = () =>
+      rmSync(directory, { recursive: true, force: true });
+    process.once('exit', removeStorageDir);
+  }
+
   const client = devkit.createChatGPT({
     appName: 'OpenDots',
     appId: 'opendots',
     redirectPort: 0,
     storageDir,
     credentialEncryption: encryption,
+    ...(options.openBrowser ? { openBrowser: options.openBrowser } : {}),
   });
   const store = new devkit.ConnectionStore(storageDir, encryption);
+
+  // The DevKit hides why its storage failed. When we know (a missing key, an
+  // unreadable Keychain), say so and say how to recover.
+  const toPlanError = (error: unknown, signal?: AbortSignal): unknown => {
+    if (
+      signal?.aborted ||
+      !(error instanceof Error) ||
+      error instanceof ChatGPTPlanError
+    )
+      return error;
+    const { code, retryable } = error as {
+      code?: unknown;
+      retryable?: unknown;
+    };
+    if (typeof code !== 'string' || code === 'cancelled') return error;
+    if (failure && code.startsWith('storage_'))
+      return new ChatGPTPlanError(
+        failure,
+        credentialFailureHint(failure),
+        failure === 'keychain_unavailable' || failure === 'lock_timeout'
+          ? 503
+          : 401,
+      );
+    return new ChatGPTPlanError(
+      code,
+      error.message,
+      retryable === true
+        ? 503
+        : /sign_in|sharing|reauth/.test(code)
+          ? 401
+          : 502,
+    );
+  };
   const listModels = async (signal?: AbortSignal) => {
     try {
       return await client.listModels({ signal });
@@ -138,31 +237,71 @@ export async function createChatGPTPlanSession(options: {
       throw toPlanError(error, signal);
     }
   };
+  const signOut = async () => {
+    try {
+      await client.disconnect();
+      return { revoked: true };
+    } catch (error) {
+      // The DevKit has already cleared the local tokens; only the remote
+      // revocation could not be confirmed.
+      if ((error as { code?: unknown })?.code === 'revocation_failed')
+        return { revoked: false };
+      throw toPlanError(error);
+    }
+  };
+  let closed = false;
+
   return {
+    credentialStore,
     auth: {
       listModels,
       async getAccessToken(signal) {
-        let token = await readAccessToken(store);
-        if (!token || token.expiresAt - Date.now() < REFRESH_MARGIN_MS) {
-          // Refreshes through the DevKit when the token is near expiry.
-          await listModels(signal);
-          token = await readAccessToken(store);
+        try {
+          let token = await readAccessToken(store);
+          if (!token || token.expiresAt - Date.now() < REFRESH_MARGIN_MS) {
+            // Refreshes through the DevKit when the token is near expiry.
+            await listModels(signal);
+            token = await readAccessToken(store);
+          }
+          if (!token)
+            throw new ChatGPTPlanError(
+              'sign_in_required',
+              'Sign in with ChatGPT to continue.',
+              401,
+            );
+          return token.accessToken;
+        } catch (error) {
+          throw toPlanError(error, signal);
         }
-        if (!token)
-          throw new ChatGPTPlanError(
-            'sign_in_required',
-            'Sign in with ChatGPT to continue.',
-            401,
-          );
-        return token.accessToken;
       },
     },
-    async isSignedIn() {
+    async status() {
       const session = await client.getSession();
-      return session.status === 'connected' && session.sharing;
+      if (session.status === 'connected' && session.sharing)
+        return { state: 'signed_in' };
+      const code = session.error?.code;
+      if (code && /^(storage_|host_identity)/.test(code))
+        return {
+          state: 'unavailable',
+          failure: failure
+            ? { code: failure, hint: credentialFailureHint(failure) }
+            : { code, hint: session.error?.message ?? code },
+        };
+      return { state: 'signed_out' };
     },
     async signIn(signal) {
-      const session = await client.signIn({ newProfile: true, signal });
+      let session: DevKitSession;
+      try {
+        const saved = (await client.listProfiles()).find(
+          (profile) => !profile.requiresNewRegistration,
+        );
+        session = await client.signIn({
+          ...(saved ? { profileId: saved.id } : { newProfile: true }),
+          signal,
+        });
+      } catch (error) {
+        throw toPlanError(error, signal);
+      }
       if (!session.sharing)
         throw new ChatGPTPlanError(
           'sharing_not_enabled',
@@ -170,10 +309,16 @@ export async function createChatGPTPlanSession(options: {
           401,
         );
     },
-    async dispose() {
-      process.removeListener('exit', removeStorageDir);
-      await client.disconnect().catch(() => undefined);
-      await rm(storageDir, { recursive: true, force: true });
+    signOut,
+    async close() {
+      if (closed) return;
+      closed = true;
+      if (credentialStore === 'ephemeral') {
+        await signOut().catch(() => undefined);
+        if (removeStorageDir) process.removeListener('exit', removeStorageDir);
+        await rm(storageDir, { recursive: true, force: true });
+      }
+      encryption.close();
     },
   };
 }

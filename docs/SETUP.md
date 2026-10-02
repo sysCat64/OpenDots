@@ -27,17 +27,18 @@ Open http://127.0.0.1:4310. Keep the server running for background work.
 
 Edit `.env` on the server and restart after changes:
 
-| Variable                                      | Purpose                                                   |
-| --------------------------------------------- | --------------------------------------------------------- |
-| `INTELLIGENCE_API_KEY`                        | Project credential for conversation persistence           |
-| `INTELLIGENCE_API_URL`, `INTELLIGENCE_WS_URL` | Endpoint overrides for your Intelligence deployment       |
-| `OPENAI_API_KEY`, `OPENAI_MODEL`              | Model credential and model identifier                     |
-| `OPENAI_BASE_URL`                             | Compatible model API endpoint                             |
-| `MODEL_PROVIDER`, `CHATGPT_DEVKIT_DIST`       | Optional [ChatGPT plan](CHATGPT_PLAN.md) model provider   |
-| `OWNER_ID`                                    | Stable identity used for this deployment's conversations  |
-| `DATABASE_PATH`                               | SQLite file containing pages, workspace and work metadata |
-| `OWNER_TOKEN`                                 | Application access token; required for external bindings  |
-| `APP_ORIGIN`                                  | Exact browser origin when using a proxy or custom domain  |
+| Variable                                        | Purpose                                                      |
+| ----------------------------------------------- | ------------------------------------------------------------ |
+| `INTELLIGENCE_API_KEY`                          | Project credential for conversation persistence              |
+| `INTELLIGENCE_API_URL`, `INTELLIGENCE_WS_URL`   | Endpoint overrides for your Intelligence deployment          |
+| `OPENAI_API_KEY`, `OPENAI_MODEL`                | Model credential and model identifier                        |
+| `OPENAI_BASE_URL`                               | Compatible model API endpoint                                |
+| `MODEL_PROVIDER`, `CHATGPT_DEVKIT_DIST`         | Optional [ChatGPT plan](CHATGPT_PLAN.md) model provider      |
+| `CHATGPT_CREDENTIAL_STORE`, `CHATGPT_STATE_DIR` | Whether a ChatGPT sign-in survives restarts (macOS Keychain) |
+| `OWNER_ID`                                      | Stable identity used for this deployment's conversations     |
+| `DATABASE_PATH`                                 | SQLite file containing pages, workspace and work metadata    |
+| `OWNER_TOKEN`                                   | Application access token; required for external bindings     |
+| `APP_ORIGIN`                                    | Exact browser origin when using a proxy or custom domain     |
 
 The model environment variable names follow the configured provider adapter. Provider credentials belong in `.env`, not client-side variables or source code. Conversation history lives in the configured Intelligence project; copying the SQLite file alone does not back up that history.
 

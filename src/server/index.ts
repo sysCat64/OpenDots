@@ -29,10 +29,17 @@ const workspace = new WorkspaceStore(
 const modelProvider = process.env.MODEL_PROVIDER ?? 'api-key';
 if (!['api-key', 'chatgpt-plan'].includes(modelProvider))
   throw new Error('MODEL_PROVIDER must be api-key or chatgpt-plan.');
+// Never falls back: a keychain request that cannot be honoured stops startup
+// (or reports unavailable at request time) instead of using ephemeral storage.
+const credentialStore = process.env.CHATGPT_CREDENTIAL_STORE ?? 'ephemeral';
+if (!['ephemeral', 'keychain'].includes(credentialStore))
+  throw new Error('CHATGPT_CREDENTIAL_STORE must be ephemeral or keychain.');
 const chatgptPlan =
   modelProvider === 'chatgpt-plan' && process.env.CHATGPT_DEVKIT_DIST
     ? await createChatGPTPlanSession({
         devkitDist: process.env.CHATGPT_DEVKIT_DIST,
+        credentialStore: credentialStore as 'ephemeral' | 'keychain',
+        stateDir: process.env.CHATGPT_STATE_DIR || undefined,
       })
     : undefined;
 const config: PlatformConfig = {
@@ -123,20 +130,23 @@ const server = serve({ fetch: app.fetch, hostname: host, port }, (info) => {
   runner.start();
   if (chatgptPlan) {
     // The sign-in browser opens on this machine, so only offer it locally.
-    const failed = (error: unknown) =>
-      console.warn(
-        'ChatGPT sign-in failed:',
-        error instanceof Error ? error.message : 'unknown error',
-      );
+    const report = (message: string) =>
+      console.warn(`ChatGPT plan: ${message}`);
     if (['127.0.0.1', '::1', 'localhost'].includes(host))
       void chatgptPlan
-        .isSignedIn()
-        .then((signedIn) => (signedIn ? undefined : chatgptPlan.signIn()))
-        .catch(failed);
-    else
-      console.warn(
-        'ChatGPT plan sign-in requires HOST to be a loopback address.',
-      );
+        .status()
+        .then((status) => {
+          // A valid saved session never opens a browser; neither does a
+          // storage problem the owner has to fix first.
+          if (status.state === 'signed_out') return chatgptPlan.signIn();
+          if (status.state === 'unavailable') report(status.failure.hint);
+        })
+        .catch((error: unknown) =>
+          report(
+            `sign-in failed: ${error instanceof Error ? error.message : 'unknown error'}`,
+          ),
+        );
+    else report('sign-in requires HOST to be a loopback address.');
   }
   void platform
     .start()
@@ -153,7 +163,7 @@ const shutdown = createShutdown({
     try {
       await platform.stop();
     } finally {
-      await chatgptPlan?.dispose();
+      await chatgptPlan?.close();
     }
   },
   closeServer: () =>

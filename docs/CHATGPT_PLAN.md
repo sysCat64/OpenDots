@@ -17,7 +17,7 @@ The SIWC DevKit is a separate project under a noncommercial license. OpenDots do
    OPENAI_MODEL=<a model slug your account offers>
    ```
 
-3. Start the server on a loopback `HOST`. If no session exists it opens the sign-in page in your browser. Sign-in must be done on the same machine.
+3. Start the server on a loopback `HOST`. If no session exists it opens the sign-in page in your browser. Sign-in must be done on the same machine. Add `CHATGPT_CREDENTIAL_STORE=keychain` (macOS) to stay signed in across restarts; see Credential storage.
 
 `OPENAI_MODEL` is checked against the models your account actually offers (the DevKit `listModels()`), never against a built-in list. An unavailable model fails the request with the current list in the message. `OPENAI_API_KEY` and `OPENAI_BASE_URL` are ignored in this mode.
 
@@ -33,13 +33,53 @@ To check a real account end to end, run `node --import tsx experiments/chatgpt-p
 
 ## Credential storage
 
-Not persistent yet. Sign-in state is encrypted with a random key that exists only in the server process's memory, in a private temporary directory removed on exit. Restarting the server means signing in again. This fails safe: nothing durable can decrypt the stored state.
+Two stores, chosen with `CHATGPT_CREDENTIAL_STORE`. Neither ever falls back to the other, and neither writes a plaintext credential.
 
-Durable storage needs a key held by the OS, not by OpenDots:
+**`ephemeral` (default).** The sign-in state is encrypted with a random key that exists only in the server process's memory, in a private temporary directory removed on exit. Restarting means signing in again. On shutdown the tokens are also revoked.
 
-- macOS Keychain and Linux libsecret, called through a native API. The `security` command is not suitable because the secret would appear in the process arguments.
-- The same `CredentialEncryption` contract the DevKit already requires (`id`, `isAvailable`, `encrypt`, `decrypt`), so only `ephemeral-encryption.ts` and its wiring change.
-- Fail closed if the OS store is locked or unavailable; never fall back to a plaintext or file-held key.
+**`keychain` (macOS only).** The sign-in survives restarts, so a valid saved session never opens the browser.
+
+- A random 32-byte key is kept in the macOS Keychain (generic password, service `OpenDots ChatGPT plan credential key`, stored as base64 and read back strictly as exactly 32 bytes). The `@napi-rs/keyring` addon calls the Keychain API directly: no `security` process, nothing in argv or the environment. It is an optional dependency, loaded only in this mode.
+- The DevKit's own encrypted file (`chatgpt-auth.json`: tokens, client registration, identity) is sealed with that key using AES-256-GCM and stays in the state directory, `~/Library/Application Support/OpenDots/chatgpt-plan` by default (`CHATGPT_STATE_DIR` overrides it). The key is never written to a file.
+- The directory is `0700` and every file `0600`; anything looser is refused.
+- `opendots-key.json` holds only a random key id, which names the Keychain item. Copying the directory to another machine, or restoring a backup after the Keychain item is gone, cannot decrypt anything.
+
+What this protects: copies of the state directory (backups, sync, disk images) and other OS users. What it does not: other code running as you. The Keychain item is readable without a prompt by the program that created it (here, the `node` binary), so any script run by that same `node` can read it. After switching Node versions macOS may ask for permission; choose Always Allow.
+
+### Lifecycle
+
+- **Start:** nothing touches the network. A saved, valid session is restored. Only when there is no session does the server open the sign-in page (loopback `HOST` only). If storage is unavailable or damaged it reports why and does not open a browser.
+- **Refresh:** unchanged; the DevKit rotates tokens and the new state is re-encrypted with the same key.
+- **Shutdown:** only releases resources. It does not sign out, revoke, or delete anything.
+- **Sign-out and reset:** explicit actions only, below.
+
+### Management commands
+
+```sh
+npm run chatgpt-plan -- status           # read-only; never creates a key or file
+npm run chatgpt-plan -- sign-out         # revoke tokens; keep the key and registration
+npm run chatgpt-plan -- reset            # shows what would be removed, changes nothing
+npm run chatgpt-plan -- reset --yes      # revoke if possible, then delete files and the Keychain item
+```
+
+For a built server use `node dist/server/server/chatgpt-plan-cli.js <command>`. Stop the server before `reset`. If `reset` cannot revoke remotely (the key is already gone), disconnect OpenDots in ChatGPT Settings. Remove the saved session with `reset --yes` before uninstalling; deleting the project alone leaves the Keychain item behind.
+
+### When it fails closed
+
+| Situation                                                | What happens                                                                      |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Keychain locked or unreadable                            | Requests fail with a retryable 503; nothing is changed. Unlock and retry.         |
+| Encrypted file exists but its Keychain key is missing    | `credential_key_missing`. No new key is created. Run `reset --yes`, then sign in. |
+| Ciphertext damaged                                       | `credential_ciphertext_invalid`; the file is preserved. Run `reset --yes`.        |
+| File written under the other store                       | The DevKit rejects it (`storage_provider_mismatch`); the file is preserved.       |
+| `opendots-key.json` unreadable, or a file is not private | Refused until fixed or reset.                                                     |
+| Not macOS, or `@napi-rs/keyring` not installed           | Startup stops with an explanation.                                                |
+
+If the server is killed during first-time key creation, the next start recovers: the creation lock names its owner's process id, and a lock whose owner is gone is taken over at once. A lock whose owner is still running is never taken, however old it is. Only a lock with no usable owner (empty or damaged) is judged by its age. One corner case: if the operating system hands a dead owner's process id to an unrelated program, the lock looks held and startup stops with `lock_timeout`. If no OpenDots process is running, delete `.opendots-key.lock` in the state directory.
+
+**Cleanup limit.** The Keychain item is found through the key id in `opendots-key.json`. If that file is missing or damaged, `reset` cannot tell which Keychain item belonged to this session, reports `Keychain item: unknown`, and an orphaned item may remain. The leftover is only a random encryption key for data that no longer exists, so it cannot be used to recover anything; it just wastes an entry. To remove it, open Keychain Access, search for the service `OpenDots ChatGPT plan credential key`, and delete the entries. Check which ones are current first if you also run other OpenDots state directories.
+
+Linux (libsecret) is not implemented. When added it must require a persistent Secret Service and never use the kernel keyring as a fallback.
 
 ## Not covered
 
