@@ -8,6 +8,8 @@ import { createApp } from './app.js';
 import { WorkspaceStore } from './workspace.js';
 import { Platform } from './platform.js';
 import type { PlatformConfig } from './platform-config.js';
+import { chatgptPlanProvider } from './chatgpt-plan.js';
+import { createChatGPTPlanSession } from './chatgpt-devkit.js';
 const host = process.env.HOST ?? '127.0.0.1';
 const port = Number(process.env.PORT ?? 4310);
 const ownerToken = process.env.OWNER_TOKEN;
@@ -24,6 +26,15 @@ const workspace = new WorkspaceStore(
   database,
   process.env.OWNER_ID ?? 'opendots-owner',
 );
+const modelProvider = process.env.MODEL_PROVIDER ?? 'api-key';
+if (!['api-key', 'chatgpt-plan'].includes(modelProvider))
+  throw new Error('MODEL_PROVIDER must be api-key or chatgpt-plan.');
+const chatgptPlan =
+  modelProvider === 'chatgpt-plan' && process.env.CHATGPT_DEVKIT_DIST
+    ? await createChatGPTPlanSession({
+        devkitDist: process.env.CHATGPT_DEVKIT_DIST,
+      })
+    : undefined;
 const config: PlatformConfig = {
   intelligenceKey: process.env.INTELLIGENCE_API_KEY,
   intelligenceApiUrl: process.env.INTELLIGENCE_API_URL || undefined,
@@ -31,6 +42,13 @@ const config: PlatformConfig = {
   apiKey: process.env.OPENAI_API_KEY,
   model: process.env.OPENAI_MODEL,
   baseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
+  modelProvider:
+    modelProvider === 'chatgpt-plan'
+      ? chatgptPlanProvider({
+          auth: chatgptPlan?.auth,
+          model: process.env.OPENAI_MODEL,
+        })
+      : undefined,
   browserUrl: process.env.BROWSER_URL,
   browserSecret: process.env.BROWSER_SECRET,
   computerSupervisorUrl: process.env.COMPUTER_SUPERVISOR_URL,
@@ -103,6 +121,23 @@ app.get('*', serveStatic({ path: './dist/client/index.html' }));
 const server = serve({ fetch: app.fetch, hostname: host, port }, (info) => {
   console.log(`OpenDots template listening on http://${host}:${info.port}`);
   runner.start();
+  if (chatgptPlan) {
+    // The sign-in browser opens on this machine, so only offer it locally.
+    const failed = (error: unknown) =>
+      console.warn(
+        'ChatGPT sign-in failed:',
+        error instanceof Error ? error.message : 'unknown error',
+      );
+    if (['127.0.0.1', '::1', 'localhost'].includes(host))
+      void chatgptPlan
+        .isSignedIn()
+        .then((signedIn) => (signedIn ? undefined : chatgptPlan.signIn()))
+        .catch(failed);
+    else
+      console.warn(
+        'ChatGPT plan sign-in requires HOST to be a loopback address.',
+      );
+  }
   void platform
     .start()
     .catch((error) =>
@@ -114,7 +149,13 @@ const server = serve({ fetch: app.fetch, hostname: host, port }, (info) => {
 });
 const shutdown = createShutdown({
   stopRunner: () => runner.stop(),
-  stopPlatform: () => platform.stop(),
+  stopPlatform: async () => {
+    try {
+      await platform.stop();
+    } finally {
+      await chatgptPlan?.dispose();
+    }
+  },
   closeServer: () =>
     new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

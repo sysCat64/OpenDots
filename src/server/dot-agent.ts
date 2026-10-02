@@ -10,7 +10,7 @@ import {
   convertInputToTanStackAI,
 } from '@copilotkit/runtime/v2';
 import { chat, maxIterations } from '@tanstack/ai';
-import { openaiCompatibleText } from '@tanstack/ai-openai/compatible';
+import { apiKeyProvider } from './model-provider.js';
 import { learnedSkillTools, tanstackTools } from './tanstack-tools.js';
 import { Observable } from 'rxjs';
 import { z } from 'zod';
@@ -73,11 +73,9 @@ export class DotAgent extends AbstractAgent {
           input.threadId,
           dot.id,
         );
-        if (
-          !this.config.intelligenceKey ||
-          !this.config.apiKey ||
-          !this.config.model
-        )
+        const provider =
+          this.config.modelProvider ?? apiKeyProvider(this.config);
+        if (!this.config.intelligenceKey || !provider.configured)
           throw new Error('Intelligence and model configuration are required.');
         const initialSettings = this.store.settings();
         const check = () => {
@@ -179,12 +177,7 @@ export class DotAgent extends AbstractAgent {
           initialSettings.memoryAllowed && dot.memoryAllowed
             ? this.store.memories().map((memory) => memory.text)
             : [];
-        const adapter = openaiCompatibleText(this.config.model, {
-          apiKey: this.config.apiKey,
-          baseURL: this.config.baseUrl ?? 'https://api.openai.com/v1',
-          api: 'chat-completions',
-          maxRetries: 1,
-        });
+        const adapter = provider.createAdapter();
         const serverTools = [
           ...tools,
           ...pageTools(pages),
@@ -226,7 +219,7 @@ export class DotAgent extends AbstractAgent {
               abortController: ctx.abortController,
               threadId: ctx.input.threadId,
               runId: ctx.input.runId,
-              modelOptions: { max_completion_tokens: 2200 },
+              modelOptions: provider.modelOptions,
               agentLoopStrategy: maxIterations(
                 dot.skillDeliveryEnabled && conversation.learningContainerId
                   ? 10

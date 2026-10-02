@@ -33,6 +33,7 @@ Edit `.env` on the server and restart after changes:
 | `INTELLIGENCE_API_URL`, `INTELLIGENCE_WS_URL` | Endpoint overrides for your Intelligence deployment       |
 | `OPENAI_API_KEY`, `OPENAI_MODEL`              | Model credential and model identifier                     |
 | `OPENAI_BASE_URL`                             | Compatible model API endpoint                             |
+| `MODEL_PROVIDER`, `CHATGPT_DEVKIT_DIST`       | Optional [ChatGPT plan](CHATGPT_PLAN.md) model provider   |
 | `OWNER_ID`                                    | Stable identity used for this deployment's conversations  |
 | `DATABASE_PATH`                               | SQLite file containing pages, workspace and work metadata |
 | `OWNER_TOKEN`                                 | Application access token; required for external bindings  |
