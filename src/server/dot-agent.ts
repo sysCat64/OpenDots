@@ -11,6 +11,7 @@ import {
 } from '@copilotkit/runtime/v2';
 import { chat, maxIterations } from '@tanstack/ai';
 import { apiKeyProvider } from './model-provider.js';
+import { captureRunErrorCode } from './run-error-code.js';
 import { learnedSkillTools, tanstackTools } from './tanstack-tools.js';
 import { Observable } from 'rxjs';
 import { z } from 'zod';
@@ -54,6 +55,8 @@ export class DotAgent extends AbstractAgent {
       this.controller = controller;
       let subscription: { unsubscribe(): void } | undefined;
       let watcher: ReturnType<typeof setInterval> | undefined;
+      // Local to this run: see run-error-code.ts.
+      const runErrorCode = captureRunErrorCode();
       const timeout = setTimeout(() => this.abortRun(), 90_000);
       try {
         const dot = this.workspace.dot(this.dotId);
@@ -223,6 +226,7 @@ export class DotAgent extends AbstractAgent {
               threadId: ctx.input.threadId,
               runId: ctx.input.runId,
               modelOptions: provider.modelOptions,
+              middleware: [runErrorCode.middleware],
               agentLoopStrategy: maxIterations(
                 dot.skillDeliveryEnabled && conversation.learningContainerId
                   ? 10
@@ -247,12 +251,21 @@ export class DotAgent extends AbstractAgent {
             forwardedProps: {},
           })
           .subscribe({
-            next: (event) =>
-              subscriber.next(
-                this.channel && event.type === EventType.RUN_ERROR
-                  ? channelError()
-                  : event,
-              ),
+            next: (event) => {
+              if (event.type !== EventType.RUN_ERROR) {
+                subscriber.next(event);
+                return;
+              }
+              // The converter dropped the code; give back the one captured from
+              // TanStack's chunk, once. Channels stay generic and leave the
+              // capture alone.
+              if (this.channel) {
+                subscriber.next(channelError());
+                return;
+              }
+              const code = runErrorCode.take();
+              subscriber.next(code === undefined ? event : { ...event, code });
+            },
             error: (error: unknown) => {
               if (this.channel) {
                 subscriber.next(channelError());

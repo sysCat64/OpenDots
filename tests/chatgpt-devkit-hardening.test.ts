@@ -440,6 +440,53 @@ describe('getting an access token', () => {
     ).toMatchObject({ status: 502 });
     await session.close();
   });
+
+  it('classifies by explicit code, never by how a code is spelled', async () => {
+    g.__devkit.state = stateWith('old-token', Date.now() + 10_000);
+    const session = await open();
+    const statusOf = async (code: string, retryable = false) => {
+      g.__devkit.listModelsError = devkitError(code, 'Text.', retryable);
+      const error = await token(session).catch((e) => e);
+      return { code: error.code, status: error.status };
+    };
+    // Sign in again: 401.
+    for (const code of [
+      'sign_in_required',
+      'sharing_not_enabled',
+      'reauth_required',
+      'invalid_grant',
+      'invalid_refresh_token',
+      'token_expired',
+      'refresh_token_expired',
+      'refresh_token_invalidated',
+      'refresh_token_reused',
+    ])
+      expect(await statusOf(code), code).toEqual({ code, status: 401 });
+    // The Subscription Sharing limit is a refusal, not an authentication
+    // failure: 403, so the model client does not retry it.
+    expect(await statusOf('subscription_sharing_usage_limit_exceeded')).toEqual(
+      { code: 'subscription_sharing_usage_limit_exceeded', status: 403 },
+    );
+    // Other subscription_sharing_* codes are not sign-in errors either, and
+    // nothing treats them as a family: unknown means 502.
+    for (const code of [
+      'subscription_sharing_user_not_eligible',
+      'subscription_sharing_invalid_user',
+      'subscription_sharing_route_not_supported',
+      'a_sign_in_lookalike',
+      'reauthorize_later',
+    ])
+      expect(await statusOf(code), code).toEqual({ code, status: 502 });
+    // The DevKit's retryable flag wins over everything, including the code.
+    expect(
+      await statusOf('subscription_sharing_usage_unavailable', true),
+    ).toEqual({ code: 'subscription_sharing_usage_unavailable', status: 503 });
+    expect(await statusOf('refresh_token_reused', true)).toEqual({
+      code: 'refresh_token_reused',
+      status: 503,
+    });
+    await session.close();
+  });
 });
 
 describe('an unsupported saved state is never a sign-out', () => {

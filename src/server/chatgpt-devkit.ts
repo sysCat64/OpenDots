@@ -31,6 +31,7 @@ import {
   type DevKitCompatibility,
   type TokenSource,
 } from './devkit-compat.js';
+import { USAGE_LIMIT_CODE } from '../shared/run-errors.js';
 import { ModelCatalog } from './model-catalog.js';
 import { ensurePrivateDir } from './private-fs.js';
 import {
@@ -97,9 +98,10 @@ const KNOWN_STATUSES = [
   'connected',
   'reauth_required',
 ];
-// The DevKit's own list of failures that mean "sign in again". The set of error
-// codes is open (some come from the server), so this only sharpens the HTTP
-// status of requests; it never decides whether the owner is signed out.
+// The DevKit's own list of failures that mean "sign in again", plus the codes
+// that say the same thing without a refresh. The set of error codes is open
+// (some come from the server), so these only sharpen the HTTP status of
+// requests; they never decide whether the owner is signed out.
 const NEEDS_SIGN_IN_CODES = new Set([
   'invalid_grant',
   'invalid_refresh_token',
@@ -107,7 +109,20 @@ const NEEDS_SIGN_IN_CODES = new Set([
   'refresh_token_expired',
   'refresh_token_invalidated',
   'refresh_token_reused',
+  'sign_in_required',
+  'sharing_not_enabled',
+  'reauth_required',
 ]);
+// The status a plan error surfaces as to the model client. Explicit codes only:
+// no pattern and no prefix, so a code is never an authentication failure just
+// because of its spelling. The DevKit's own `retryable` is authoritative.
+function planErrorStatus(code: string, retryable: boolean): number {
+  if (retryable) return 503;
+  if (NEEDS_SIGN_IN_CODES.has(code)) return 401;
+  // A refusal, not an authentication failure; the client must not retry it.
+  if (code === USAGE_LIMIT_CODE) return 403;
+  return 502;
+}
 const isStorageCode = (code: string) =>
   code.startsWith('storage_') || code.startsWith('host_identity');
 
@@ -323,15 +338,11 @@ export async function createChatGPTPlanSession(
           ? 503
           : 401,
       );
-    // The DevKit's own `retryable` is authoritative; the code set is open.
+    // The code set is open: anything not listed above is a plain 502.
     return new ChatGPTPlanError(
       code,
       error.message,
-      retryable === true
-        ? 503
-        : NEEDS_SIGN_IN_CODES.has(code) || /sign_in|sharing|reauth/.test(code)
-          ? 401
-          : 502,
+      planErrorStatus(code, retryable === true),
     );
   };
   const listModels = async (signal?: AbortSignal) => {

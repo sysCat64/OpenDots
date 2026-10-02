@@ -93,6 +93,18 @@ export function responsesToolCall(
   ]);
 }
 
+// What a plan account at its Subscription Sharing limit receives (observed on
+// the wire): HTTP 200, then `event: error` with an `error` object.
+export function responsesStreamError(code: string, message: string) {
+  return sse([
+    {
+      type: 'error',
+      error: { type: 'invalid_request_error', code, message, param: null },
+      sequence_number: 1,
+    },
+  ]);
+}
+
 export function responsesText(text: string) {
   const item = {
     type: 'message',
