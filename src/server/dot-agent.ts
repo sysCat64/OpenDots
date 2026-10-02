@@ -73,8 +73,11 @@ export class DotAgent extends AbstractAgent {
           input.threadId,
           dot.id,
         );
-        const provider =
+        const configured =
           this.config.modelProvider ?? apiKeyProvider(this.config);
+        // One snapshot per run: a provider switched in the UI applies from the
+        // next run, never midway through this one.
+        const provider = configured.snapshot?.() ?? configured;
         if (!this.config.intelligenceKey || !provider.configured)
           throw new Error('Intelligence and model configuration are required.');
         const initialSettings = this.store.settings();

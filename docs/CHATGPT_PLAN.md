@@ -9,17 +9,41 @@ The SIWC DevKit is a separate project under a noncommercial license. OpenDots do
 ## Setup
 
 1. Build the DevKit: `npm run build -w @siwc/local` in its repository.
-2. In `.env`:
+2. In `.env`, point OpenDots at it. This is all the server needs to offer ChatGPT plan:
 
    ```sh
-   MODEL_PROVIDER=chatgpt-plan
    CHATGPT_DEVKIT_DIST=/path/to/sign-in-with-chatgpt-devkit/packages/local/dist
-   OPENAI_MODEL=<a model slug your account offers>
+   # Optional server defaults (the Model settings can override both):
+   # MODEL_PROVIDER=chatgpt-plan
+   # OPENAI_MODEL=<a model slug your account offers>
+   # Keep the sign-in across restarts (macOS):
+   # CHATGPT_CREDENTIAL_STORE=keychain
    ```
 
-3. Start the server on a loopback `HOST`. If no session exists it opens the sign-in page in your browser. Sign-in must be done on the same machine. Add `CHATGPT_CREDENTIAL_STORE=keychain` (macOS) to stay signed in across restarts; see Credential storage.
+3. Start the server on a loopback `HOST`, open OpenDots, and use **Model** (sidebar or rail icon) to sign in, see the models your account offers, and pick one. The server never opens a browser by itself.
 
-`OPENAI_MODEL` is checked against the models your account actually offers (the DevKit `listModels()`), never against a built-in list. An unavailable model fails the request with the current list in the message. `OPENAI_API_KEY` and `OPENAI_BASE_URL` are ignored in this mode.
+`OPENAI_API_KEY` and `OPENAI_BASE_URL` apply only to the API key provider.
+
+## Model settings in the web UI
+
+The **Model** dialog shows and changes everything about which model runs next:
+
+- **Provider:** OpenAI API key or ChatGPT plan. A provider the server has not configured is disabled, with the variable that is missing.
+- **ChatGPT connection:** Connected, Signed out, Unavailable (with the reason), or in transition. **Sign in with ChatGPT** starts sign-in; the dialog then shows **Continue in ChatGPT ↗**, which opens ChatGPT in a new tab. Finish there and come back: the dialog notices on its own. **Cancel** stops a pending sign-in. **Sign out** revokes OpenDots' access and clears the tokens, but keeps the saved registration and the encryption key, so signing in again is quick.
+- **Model:** a list read live from your account, never a built-in one. Refresh it with the circular arrow.
+- **Use server default:** removes whatever you chose here, so the server's environment decides again.
+
+Changes apply to the next message. A message already running finishes on the provider and model it started with. No restart is needed.
+
+**Precedence.** The server's environment says what is _available_ and what to use by default (`MODEL_PROVIDER`, `OPENAI_MODEL`). What you choose in the dialog is saved in OpenDots' database (a provider name and a model name, never a key) and wins over those defaults; the dialog shows which one is in effect. Keys, the base URL, `CHATGPT_DEVKIT_DIST`, the credential store and the state directory are server-only and not editable from the browser.
+
+**Which model runs.** The saved model if your account currently offers it; otherwise the server's `OPENAI_MODEL` if your account offers that; otherwise none, and the dialog says so. OpenDots never quietly substitutes some other model, and it never deletes your saved choice if it disappears: it tells you, and the choice works again if the model returns.
+
+**Signed out** shows a notice and the Model dialog opens from it; chat is not blocked. A message sent while signed out fails with a clear sign-in error.
+
+**Remote servers.** Sign-in completes through a loopback address on the machine running OpenDots, so it only works with a loopback `HOST` and a browser on that same machine. Elsewhere the dialog says to sign in on the server machine (or use the command-line tools).
+
+**Reset is not in the UI.** If the connection is unavailable because the saved credentials are damaged or their key is gone, the dialog shows the recovery command (see Management commands) rather than a button.
 
 To check a real account end to end, run `node --import tsx experiments/chatgpt-plan-smoke.ts [model]`. It signs in, lists models, and runs one `DotAgent` turn that calls a server tool and returns a final answer.
 
@@ -48,7 +72,7 @@ What this protects: copies of the state directory (backups, sync, disk images) a
 
 ### Lifecycle
 
-- **Start:** nothing touches the network. A saved, valid session is restored. Only when there is no session does the server open the sign-in page (loopback `HOST` only). If storage is unavailable or damaged it reports why and does not open a browser.
+- **Start:** nothing touches the network. A saved, valid session is restored. The server never opens a browser on its own: signing in is something you do from the Model dialog (or the command line). If storage is unavailable or damaged it reports why in the dialog.
 - **Refresh:** unchanged; the DevKit rotates tokens and the new state is re-encrypted with the same key.
 - **Shutdown:** only releases resources. It does not sign out, revoke, or delete anything.
 - **Sign-out and reset:** explicit actions only, below.
@@ -83,4 +107,4 @@ Linux (libsecret) is not implemented. When added it must require a persistent Se
 
 ## Not covered
 
-Sign-in and model selection in the web UI, Voice/Realtime, and scheduled-task research (`research.ts` still requires `OPENAI_API_KEY`).
+Resetting from the web UI, per-Dot models, Voice/Realtime, and scheduled-task research (`research.ts` still requires `OPENAI_API_KEY`).

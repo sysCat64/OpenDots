@@ -18,6 +18,7 @@ import {
   openPersistentKey,
   type KeyBackend,
 } from './credential-keys.js';
+import { ModelCatalog } from './model-catalog.js';
 import { ensurePrivateDir } from './private-fs.js';
 import {
   memoryKeySource,
@@ -127,6 +128,8 @@ export type ChatGPTPlanStatus =
 export interface ChatGPTPlanSession {
   readonly credentialStore: 'ephemeral' | 'keychain';
   auth: ChatGPTPlanAuth;
+  /** The one cache of this account's models; `auth.listModels` reads it. */
+  readonly models: ModelCatalog;
   /** Reads the saved session. Never opens a browser. */
   status(): Promise<ChatGPTPlanStatus>;
   /** Opens the browser. Reuses a saved profile rather than registering another. */
@@ -237,7 +240,11 @@ export async function createChatGPTPlanSession(
       throw toPlanError(error, signal);
     }
   };
+  // Uncached `listModels` above stays the path for refreshing tokens; everything
+  // else reads the shared catalog.
+  const catalog = new ModelCatalog((signal) => listModels(signal));
   const signOut = async () => {
+    catalog.clear();
     try {
       await client.disconnect();
       return { revoked: true };
@@ -253,8 +260,10 @@ export async function createChatGPTPlanSession(
 
   return {
     credentialStore,
+    models: catalog,
     auth: {
-      listModels,
+      listModels: (signal, options) =>
+        catalog.list({ signal, force: options?.force }),
       async getAccessToken(signal) {
         try {
           let token = await readAccessToken(store);
@@ -308,6 +317,8 @@ export async function createChatGPTPlanSession(
           'ChatGPT plan sharing is not enabled for this account.',
           401,
         );
+      // Possibly a different account than before.
+      catalog.clear();
     },
     signOut,
     async close() {
@@ -318,6 +329,7 @@ export async function createChatGPTPlanSession(
         if (removeStorageDir) process.removeListener('exit', removeStorageDir);
         await rm(storageDir, { recursive: true, force: true });
       }
+      catalog.clear();
       encryption.close();
     },
   };

@@ -9,6 +9,8 @@ import { configured, type Config } from './research.js';
 import type { Platform } from './platform.js';
 import { VoiceService } from './voice.js';
 import { workspaceRoutes } from './workspace-routes.js';
+import { modelRoutes } from './model-routes.js';
+import type { ModelService } from './model-service.js';
 const interval = z.number().int().min(60).max(31_536_000).nullable();
 export interface AppOptions {
   store: Store;
@@ -17,6 +19,7 @@ export interface AppOptions {
   ownerToken?: string;
   origin?: string;
   platform?: Platform;
+  models?: ModelService;
 }
 export function createApp({
   store,
@@ -25,6 +28,7 @@ export function createApp({
   ownerToken,
   origin,
   platform,
+  models,
 }: AppOptions) {
   const app = new Hono();
   app.use(
@@ -74,6 +78,7 @@ export function createApp({
     await next();
   });
   if (platform) app.route('/api', computerRoutes(platform.computers));
+  if (models) app.route('/api', modelRoutes(models));
   const voice = platform ? new VoiceService(platform) : undefined;
   if (platform && voice) app.route('/api', workspaceRoutes(platform, voice));
   app.get('/api/state', (c) =>

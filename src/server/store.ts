@@ -12,6 +12,10 @@ import type {
   Task,
   TaskEvent,
 } from '../shared/types.js';
+import {
+  MODEL_SLUG_PATTERN,
+  type ModelSelection,
+} from '../shared/model-types.js';
 
 export type Claim = Task & { lease: string };
 const defaults: Settings = {
@@ -31,12 +35,45 @@ export class Store {
       CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, taskId TEXT NOT NULL, status TEXT NOT NULL, startedAt INTEGER NOT NULL, finishedAt INTEGER, result TEXT, error TEXT);
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, taskId TEXT NOT NULL, runId TEXT, text TEXT NOT NULL, createdAt INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, text TEXT NOT NULL, createdAt INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS model_selection (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS tasks_due ON tasks(status, nextRunAt);
       CREATE INDEX IF NOT EXISTS runs_task ON runs(taskId, startedAt);
       CREATE INDEX IF NOT EXISTS events_task ON events(taskId, id);`);
     this.db
       .prepare('INSERT OR IGNORE INTO settings VALUES (1, ?)')
       .run(JSON.stringify(defaults));
+  }
+  // The owner's provider/model choice made in the UI. Names only: never a key.
+  // No row means the server's environment decides.
+  modelSelection(): ModelSelection {
+    const row = this.db
+      .prepare('SELECT value FROM model_selection WHERE id=1')
+      .get() as { value: string } | undefined;
+    if (!row) return {};
+    try {
+      const saved = JSON.parse(row.value) as Record<string, unknown>;
+      const selection: ModelSelection = {};
+      if (saved.provider === 'api-key' || saved.provider === 'chatgpt-plan')
+        selection.provider = saved.provider;
+      if (
+        typeof saved.chatgptModel === 'string' &&
+        MODEL_SLUG_PATTERN.test(saved.chatgptModel)
+      )
+        selection.chatgptModel = saved.chatgptModel;
+      return selection;
+    } catch {
+      return {};
+    }
+  }
+  setModelSelection(patch: ModelSelection): ModelSelection {
+    const selection = { ...this.modelSelection(), ...patch };
+    this.db
+      .prepare('INSERT OR REPLACE INTO model_selection VALUES (1, ?)')
+      .run(JSON.stringify(selection));
+    return selection;
+  }
+  clearModelSelection() {
+    this.db.prepare('DELETE FROM model_selection WHERE id=1').run();
   }
   close() {
     this.db.close();

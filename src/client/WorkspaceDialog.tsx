@@ -7,18 +7,36 @@ export type Dialog =
   | { type: 'settings' }
   | { type: 'memory'; memory?: Memory }
   | { type: 'schedule'; threadId: string };
+// Missing items are environment variables, except where the owner can fix them
+// in the Model settings (for example choosing a ChatGPT model).
+export function setupNote(missing: string[]) {
+  if (!missing.length)
+    return 'Text configuration is present. A successful conversation confirms connectivity.';
+  const env = missing.filter((item) => /^[A-Z][A-Z0-9_]+$/.test(item));
+  const other = missing.filter((item) => !env.includes(item));
+  return [
+    env.length &&
+      `Add ${env.join(', ')} to the server environment, then restart.`,
+    other.length && `Still needed: ${other.join(', ')}.`,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 export function WorkspaceDialog({
   dialog,
   state,
   workspace,
   onClose,
   mutate,
+  onOpenModel,
 }: {
   dialog: Dialog;
   state: State;
   workspace: WorkspaceState;
   onClose: () => void;
   mutate: (path: string, method: string, body?: unknown) => Promise<boolean>;
+  onOpenModel?: () => void;
 }) {
   const [name, setName] = useState(
     dialog.type === 'dot' ? (dialog.dot?.name ?? '') : '',
@@ -361,11 +379,16 @@ export function WorkspaceDialog({
           {dialog.type === 'settings' && (
             <div className="config-note">
               <strong>Service setup</strong>
-              <p>
-                {workspace.setup.missing.length
-                  ? `Add ${workspace.setup.missing.join(', ')} to the server environment, then restart.`
-                  : 'Text configuration is present. A successful conversation confirms connectivity.'}
-              </p>
+              <p>{setupNote(workspace.setup.missing)}</p>
+              {onOpenModel && (
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={onOpenModel}
+                >
+                  Model settings ›
+                </button>
+              )}
               <p>
                 Slack: {workspace.setup.slack.replaceAll('_', ' ')}. Voice:{' '}
                 {workspace.setup.voice

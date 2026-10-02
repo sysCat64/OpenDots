@@ -8,6 +8,7 @@ import {
   ArrowUpRight,
   BookOpen,
   Clock3,
+  Cpu,
   Code2,
   Folder,
   Menu,
@@ -39,6 +40,9 @@ import { ResultPane } from './ResultPane';
 import { TaskRow } from './TaskPresentation';
 import { TaskActions } from './TaskActions';
 import { WorkspaceDialog, type Dialog } from './WorkspaceDialog';
+import { ModelBanner, ModelDialog } from './ModelDialog';
+import { modelBanner, providerLabel } from './model-view';
+import { useModelStatus } from './useModelStatus';
 
 export function App() {
   const [state, setState] = useState<State>();
@@ -105,6 +109,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState('');
   const [taskDetail, setTaskDetail] = useState<Detail>();
+  const [modelOpen, setModelOpen] = useState(false);
   const refresh = useCallback(async () => {
     try {
       const [s, w] = await Promise.all([
@@ -123,6 +128,7 @@ export function App() {
         );
     }
   }, []);
+  const model = useModelStatus(!needsAuth && !!workspace);
   useEffect(() => {
     void refresh();
     const timer = setInterval(() => void refresh(), 3000);
@@ -299,6 +305,16 @@ export function App() {
         >
           <Settings2 size={18} />
         </button>
+        <button
+          className="rail-model"
+          aria-label="Open model settings"
+          onClick={() => setModelOpen(true)}
+        >
+          <Cpu size={18} />
+          {model.status && modelBanner(model.status) && (
+            <span className="model-dot" aria-hidden="true" />
+          )}
+        </button>
       </nav>
       <button
         className="mobile-menu icon-button"
@@ -446,6 +462,13 @@ export function App() {
             <span>Memories</span>
             <small>{state.memories.length}</small>
           </button>
+          <button className="nav-item" onClick={() => setModelOpen(true)}>
+            <Cpu size={17} />
+            <span>Model</span>
+            {model.status && (
+              <small>{providerLabel(model.status.provider)}</small>
+            )}
+          </button>
           <button
             className="nav-item"
             onClick={() => setDialog({ type: 'settings' })}
@@ -539,6 +562,7 @@ export function App() {
             All Dots are paused. Active compute stops and scheduled tasks wait.
           </div>
         )}
+        <ModelBanner status={model.status} onOpen={() => setModelOpen(true)} />
         {view === 'space' ? (
           <SpaceWorkspace
             key={spaceId}
@@ -885,6 +909,18 @@ export function App() {
           workspace={workspace}
           onClose={() => setDialog(undefined)}
           mutate={mutate}
+          onOpenModel={() => {
+            setDialog(undefined);
+            setModelOpen(true);
+          }}
+        />
+      )}
+      {modelOpen && (
+        <ModelDialog
+          status={model.status}
+          statusError={model.error}
+          onClose={() => setModelOpen(false)}
+          onStatus={model.setStatus}
         />
       )}
     </div>

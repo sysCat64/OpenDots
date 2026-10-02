@@ -8,7 +8,7 @@ import { createApp } from './app.js';
 import { WorkspaceStore } from './workspace.js';
 import { Platform } from './platform.js';
 import type { PlatformConfig } from './platform-config.js';
-import { chatgptPlanProvider } from './chatgpt-plan.js';
+import { ModelService } from './model-service.js';
 import { createChatGPTPlanSession } from './chatgpt-devkit.js';
 const host = process.env.HOST ?? '127.0.0.1';
 const port = Number(process.env.PORT ?? 4310);
@@ -26,22 +26,42 @@ const workspace = new WorkspaceStore(
   database,
   process.env.OWNER_ID ?? 'opendots-owner',
 );
-const modelProvider = process.env.MODEL_PROVIDER ?? 'api-key';
-if (!['api-key', 'chatgpt-plan'].includes(modelProvider))
+// The server's defaults. The owner can override provider and model in the UI;
+// that saved choice wins, and "Use server default" removes it.
+const serverProvider = process.env.MODEL_PROVIDER || undefined;
+if (serverProvider && !['api-key', 'chatgpt-plan'].includes(serverProvider))
   throw new Error('MODEL_PROVIDER must be api-key or chatgpt-plan.');
-// Never falls back: a keychain request that cannot be honoured stops startup
-// (or reports unavailable at request time) instead of using ephemeral storage.
+// Never falls back: a keychain request that cannot be honoured reports itself
+// unavailable instead of silently using ephemeral storage.
 const credentialStore = process.env.CHATGPT_CREDENTIAL_STORE ?? 'ephemeral';
 if (!['ephemeral', 'keychain'].includes(credentialStore))
   throw new Error('CHATGPT_CREDENTIAL_STORE must be ephemeral or keychain.');
-const chatgptPlan =
-  modelProvider === 'chatgpt-plan' && process.env.CHATGPT_DEVKIT_DIST
-    ? await createChatGPTPlanSession({
-        devkitDist: process.env.CHATGPT_DEVKIT_DIST,
+const loopback = ['127.0.0.1', '::1', 'localhost'].includes(host);
+const models = new ModelService({
+  store,
+  apiKey: {
+    apiKey: process.env.OPENAI_API_KEY,
+    model: process.env.OPENAI_MODEL,
+    baseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
+  },
+  server: {
+    provider: serverProvider as 'api-key' | 'chatgpt-plan' | undefined,
+    chatgptModel: process.env.OPENAI_MODEL,
+  },
+  chatgpt: process.env.CHATGPT_DEVKIT_DIST
+    ? {
         credentialStore: credentialStore as 'ephemeral' | 'keychain',
-        stateDir: process.env.CHATGPT_STATE_DIR || undefined,
-      })
-    : undefined;
+        createSession: (openBrowser) =>
+          createChatGPTPlanSession({
+            devkitDist: process.env.CHATGPT_DEVKIT_DIST!,
+            credentialStore: credentialStore as 'ephemeral' | 'keychain',
+            stateDir: process.env.CHATGPT_STATE_DIR || undefined,
+            openBrowser,
+          }),
+      }
+    : undefined,
+  loopback,
+});
 const config: PlatformConfig = {
   intelligenceKey: process.env.INTELLIGENCE_API_KEY,
   intelligenceApiUrl: process.env.INTELLIGENCE_API_URL || undefined,
@@ -49,13 +69,7 @@ const config: PlatformConfig = {
   apiKey: process.env.OPENAI_API_KEY,
   model: process.env.OPENAI_MODEL,
   baseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
-  modelProvider:
-    modelProvider === 'chatgpt-plan'
-      ? chatgptPlanProvider({
-          auth: chatgptPlan?.auth,
-          model: process.env.OPENAI_MODEL,
-        })
-      : undefined,
+  modelProvider: models.provider,
   browserUrl: process.env.BROWSER_URL,
   browserSecret: process.env.BROWSER_SECRET,
   computerSupervisorUrl: process.env.COMPUTER_SUPERVISOR_URL,
@@ -112,6 +126,7 @@ const app = createApp({
       ? 'http://127.0.0.1:5173'
       : undefined),
   platform,
+  models,
 });
 app.use('*', async (c, next) => {
   c.header('X-Content-Type-Options', 'nosniff');
@@ -128,26 +143,9 @@ app.get('*', serveStatic({ path: './dist/client/index.html' }));
 const server = serve({ fetch: app.fetch, hostname: host, port }, (info) => {
   console.log(`OpenDots template listening on http://${host}:${info.port}`);
   runner.start();
-  if (chatgptPlan) {
-    // The sign-in browser opens on this machine, so only offer it locally.
-    const report = (message: string) =>
-      console.warn(`ChatGPT plan: ${message}`);
-    if (['127.0.0.1', '::1', 'localhost'].includes(host))
-      void chatgptPlan
-        .status()
-        .then((status) => {
-          // A valid saved session never opens a browser; neither does a
-          // storage problem the owner has to fix first.
-          if (status.state === 'signed_out') return chatgptPlan.signIn();
-          if (status.state === 'unavailable') report(status.failure.hint);
-        })
-        .catch((error: unknown) =>
-          report(
-            `sign-in failed: ${error instanceof Error ? error.message : 'unknown error'}`,
-          ),
-        );
-    else report('sign-in requires HOST to be a loopback address.');
-  }
+  // Reads the saved ChatGPT session, if any. It never opens a browser: signing
+  // in is something the owner does from the Model settings (or the CLI).
+  void models.start();
   void platform
     .start()
     .catch((error) =>
@@ -163,7 +161,7 @@ const shutdown = createShutdown({
     try {
       await platform.stop();
     } finally {
-      await chatgptPlan?.close();
+      await models.close();
     }
   },
   closeServer: () =>

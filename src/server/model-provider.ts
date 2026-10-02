@@ -13,6 +13,12 @@ export interface ModelProvider {
   readonly missing: string[];
   readonly modelOptions: Record<string, unknown>;
   createAdapter(): ModelAdapter;
+  /**
+   * A provider whose answers can change between calls (the owner may switch in
+   * the UI) returns a fixed one here. A run takes one snapshot and uses it
+   * throughout, so its adapter and request options always belong together.
+   */
+  snapshot?(): ModelProvider;
 }
 
 export interface ApiKeyModelConfig {
