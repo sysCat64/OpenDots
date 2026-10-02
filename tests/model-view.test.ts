@@ -249,3 +249,35 @@ describe('setup note', () => {
     );
   });
 });
+
+describe('DevKit compatibility', () => {
+  const withDevkit = (
+    compatibility: 'verified' | 'untested',
+    version = '0.1.0',
+  ) =>
+    modelStatus({
+      chatgpt: {
+        state: 'signed_in',
+        model: { effective: 'gpt-5.5' },
+        devkit: { compatibility, version },
+      },
+    });
+
+  it('warns, small and specific, only for a build OpenDots was not tested with', () => {
+    expect(describeModel(withDevkit('untested', '0.2.0')).devkitWarning).toBe(
+      'This Sign in with ChatGPT DevKit build (0.2.0) passed the compatibility checks but is not one OpenDots was tested with.',
+    );
+    expect(describeModel(withDevkit('untested', '')).devkitWarning).toMatch(
+      /DevKit build passed/,
+    );
+  });
+
+  it('adds nothing for a verified build or when nothing is known', () => {
+    expect(describeModel(withDevkit('verified')).devkitWarning).toBeUndefined();
+    expect(describeModel(modelStatus()).devkitWarning).toBeUndefined();
+  });
+
+  it('never reaches the global banner', () => {
+    expect(modelBanner(withDevkit('untested'))).toBeUndefined();
+  });
+});

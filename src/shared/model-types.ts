@@ -52,6 +52,11 @@ export interface ModelStatus {
     /** Why the last sign-in attempt failed. */
     signInError?: ModelFailure;
     notice?: 'revocation_unconfirmed';
+    /**
+     * What is known about the DevKit build in use. "untested" means it passed
+     * every compatibility check but is not a build OpenDots was verified with.
+     */
+    devkit?: { compatibility: 'verified' | 'untested'; version?: string };
     /** A command for the owner, only for failures that need the CLI. */
     recovery?: string;
     model: {
@@ -74,4 +79,12 @@ export interface ModelList {
   error?: ModelFailure;
 }
 
-export const MODEL_SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
+// What the DevKit guarantees for a model's slug and display name: text, not
+// empty once trimmed, at most 200 characters. OpenDots adds no character set of
+// its own. What may be selected or run is limited by whether the account's live
+// model list contains it, not by how it is spelled.
+export const MODEL_TEXT_MAX_LENGTH = 200;
+export const isModelText = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.trim() !== '' &&
+  value.length <= MODEL_TEXT_MAX_LENGTH;

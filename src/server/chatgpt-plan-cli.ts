@@ -3,8 +3,11 @@ import { basename, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   createChatGPTPlanSession,
+  inspectDevKit,
   type ChatGPTPlanSession,
+  type DevKitInspection,
 } from './chatgpt-devkit.js';
+import { DEVKIT_LAYOUT } from './devkit-compat.js';
 import { CredentialStoreError } from './credential-errors.js';
 import {
   KeychainKeyBackend,
@@ -22,6 +25,9 @@ export interface CliDeps {
   backend: KeyBackend;
   stateDir: string;
   devkitDist?: string;
+  /** Refuse a DevKit build that is not recorded as verified. */
+  devkitStrict?: boolean;
+  inspectDevKit?: (dist: string) => Promise<DevKitInspection>;
   print(line: string): void;
   openSession?: (
     options: Parameters<typeof createChatGPTPlanSession>[0],
@@ -30,18 +36,39 @@ export interface CliDeps {
 
 const yesNo = (value: boolean) => (value ? 'present' : 'absent');
 
+function describeDevKit(found: DevKitInspection | undefined, strict?: boolean) {
+  if (!found) return 'not configured (set CHATGPT_DEVKIT_DIST)';
+  const mode = strict ? ' [strict mode]' : '';
+  if (found.outcome === 'not_found')
+    return 'not found: CHATGPT_DEVKIT_DIST must point to the built packages/local/dist';
+  const info = found.compatibility;
+  const name = info
+    ? `${info.package ?? 'unknown package'} ${info.version ?? ''}`.trim()
+    : '';
+  if (found.outcome === 'incompatible')
+    return `incompatible${name ? ` (${name})` : ''} - ${found.reason}${mode}`;
+  return info?.compatibility === 'verified'
+    ? `${name}, verified build (commit ${info.commit?.slice(0, 7)})${mode}`
+    : `${name}, untested build (fingerprint ${info?.aggregate.slice(0, 8)}…); compatibility checks passed${mode}`;
+}
+
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...flags] = argv;
-  const { backend, stateDir, devkitDist, print } = deps;
+  const { backend, stateDir, devkitDist, devkitStrict, print } = deps;
   const open = (deps.openSession ?? createChatGPTPlanSession).bind(null);
   const session = () =>
     open({
       devkitDist: devkitDist!,
+      devkitStrict,
       credentialStore: 'keychain',
       stateDir,
       keyBackend: backend,
     });
   const inspection = () => inspectPersistentCredentials({ stateDir, backend });
+  const inspect = (dist: string) =>
+    (deps.inspectDevKit ?? ((d) => inspectDevKit(d, { strict: devkitStrict })))(
+      dist,
+    );
 
   if (command === 'status') {
     const found = await inspection();
@@ -50,17 +77,20 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       `State directory:  ${found.stateDir}${found.stateDirExists ? '' : ' (not created)'}`,
     );
     print(
-      `Files:            chatgpt-auth.json ${yesNo(found.files.auth)}, opendots-key.json ${yesNo(found.files.key)}`,
+      `Files:            ${DEVKIT_LAYOUT.authFile} ${yesNo(found.files.auth)}, opendots-key.json ${yesNo(found.files.key)}`,
     );
     print(
       `Keychain item:    ${found.keychainItem}${found.keyIdPrefix ? ` (key id ${found.keyIdPrefix}…)` : ''}`,
     );
+    const devkit = devkitDist ? await inspect(devkitDist) : undefined;
+    print(`DevKit:           ${describeDevKit(devkit, devkitStrict)}`);
     if (found.problem) {
       print(
         `Problem:          ${found.problem} - ${new CredentialStoreError(found.problem).message}`,
       );
       return 1;
     }
+    if (devkit && devkit.outcome !== 'ok') return 1;
     if (!found.files.auth) {
       print('Session:          no saved session');
       return 0;
@@ -81,6 +111,32 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     } finally {
       await opened.close();
     }
+  }
+
+  if (command === 'devkit') {
+    if (!devkitDist) {
+      print('Set CHATGPT_DEVKIT_DIST to inspect a DevKit build.');
+      return 1;
+    }
+    const found = await inspect(devkitDist);
+    print(`DevKit: ${describeDevKit(found, devkitStrict)}`);
+    if (found.compatibility)
+      // The entry to add to VERIFIED_DEVKIT_BUILDS once the build has been
+      // reviewed (docs/CHATGPT_PLAN.md). The commit cannot be read from a build.
+      print(
+        JSON.stringify(
+          {
+            commit: '<the upstream commit this build was made from>',
+            package: found.compatibility.package,
+            version: found.compatibility.version,
+            files: found.compatibility.files,
+            aggregate: found.compatibility.aggregate,
+          },
+          null,
+          2,
+        ),
+      );
+    return found.outcome === 'ok' ? 0 : 1;
   }
 
   if (command === 'sign-out') {
@@ -158,7 +214,9 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     return 0;
   }
 
-  print('Usage: npm run chatgpt-plan -- status | sign-out | reset [--yes]');
+  print(
+    'Usage: npm run chatgpt-plan -- status | sign-out | reset [--yes] | devkit',
+  );
   return command ? 2 : 0;
 }
 
@@ -168,6 +226,7 @@ async function main() {
       backend: await KeychainKeyBackend.create(),
       stateDir: process.env.CHATGPT_STATE_DIR || defaultStateDir(),
       devkitDist: process.env.CHATGPT_DEVKIT_DIST || undefined,
+      devkitStrict: process.env.CHATGPT_DEVKIT_STRICT === '1',
       print: (line) => console.log(line),
     });
     process.exitCode = code;

@@ -30,7 +30,12 @@ export const reasoningItem = {
 export function responsesToolCall(
   name: string,
   args: Record<string, unknown>,
-  { callId = 'call-1', reasoning = false } = {},
+  {
+    callId = 'call-1',
+    reasoning = false,
+    // True models a server that fills response.completed.output (SIWC leaves it empty).
+    completedOutput = false,
+  } = {},
 ) {
   const item = {
     type: 'function_call',
@@ -78,7 +83,12 @@ export function responsesToolCall(
     {
       type: 'response.completed',
       sequence_number: 5,
-      response: { ...base, output: [] },
+      response: {
+        ...base,
+        output: completedOutput
+          ? [...(reasoning ? [reasoningItem] : []), item]
+          : [],
+      },
     },
   ]);
 }

@@ -158,6 +158,11 @@ export function ModelPanel({
           </div>
         )}
         {view.notice && <p className="muted">{view.notice}</p>}
+        {view.devkitWarning && (
+          <p className="muted devkit-note" role="note">
+            {view.devkitWarning}
+          </p>
+        )}
         {view.persistenceNote && (
           <p className="muted persistence">{view.persistenceNote}</p>
         )}

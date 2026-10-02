@@ -120,22 +120,109 @@ it('lets one caller stop waiting without cancelling the shared load', async () =
   expect(load).toHaveBeenCalledTimes(1);
 });
 
-it('keeps only well-formed entries from the outside', async () => {
+const goodEntry = { slug: 'good-model', displayName: 'Good' };
+
+it("accepts a slug of the DevKit's full supported length, and none longer", async () => {
+  const longest = { slug: 'a'.repeat(200), displayName: 'Longest' };
+  expect(await new ModelCatalog(async () => [longest]).list()).toEqual([
+    longest,
+  ]);
+  const tooLong = new ModelCatalog(async () => [
+    { slug: 'a'.repeat(201), displayName: 'Too long' },
+  ]);
+  await expect(tooLong.list()).rejects.toMatchObject({
+    code: 'invalid_model_catalog',
+  });
+});
+
+it('trims a display name and accepts an empty account', async () => {
+  expect(
+    await new ModelCatalog(async () => [
+      { slug: 'm', displayName: '  Name  ' },
+    ]).list(),
+  ).toEqual([{ slug: 'm', displayName: 'Name' }]);
+  expect(await new ModelCatalog(async () => []).list()).toEqual([]);
+});
+
+// OpenDots adds no character set of its own: whatever text the DevKit may
+// return as a slug is a slug. Availability is decided by the list, not by spelling.
+it.each([
+  'openai/gpt-x@2026+beta',
+  'ft:gpt-5:org::abc123',
+  'gpt 5 (preview)',
+  '../not-a-path-here',
+  '<b>markup</b>',
+  'モデル-1',
+  "it's",
+  '  padded  ',
+])('accepts the slug %j, unchanged', async (slug) => {
+  const catalog = new ModelCatalog(async () => [
+    { slug, displayName: 'Whatever' },
+  ]);
+  expect(await catalog.list()).toEqual([{ slug, displayName: 'Whatever' }]);
+});
+
+// A contract violation fails the whole catalog. Nothing is dropped, and no
+// good-looking part of a bad list is accepted.
+it.each([
+  ['an empty slug', [goodEntry, { slug: '', displayName: 'x' }]],
+  ['a blank slug', [goodEntry, { slug: '   ', displayName: 'x' }]],
+  [
+    'a slug longer than the DevKit allows',
+    [goodEntry, { slug: 'a'.repeat(201), displayName: 'x' }],
+  ],
+  ['a non-string slug', [goodEntry, { slug: 5, displayName: 'x' }]],
+  ['a missing slug', [goodEntry, { displayName: 'no slug' }]],
+  ['a missing display name', [goodEntry, { slug: 'no-name' }]],
+  ['an empty display name', [goodEntry, { slug: 'blank', displayName: '  ' }]],
+  [
+    'an over-long display name',
+    [goodEntry, { slug: 'long', displayName: 'x'.repeat(201) }],
+  ],
+  ['a non-object entry', [goodEntry, null]],
+  ['a string entry', [goodEntry, 'gpt-5.5']],
+  [
+    'a duplicate slug',
+    [goodEntry, { slug: 'good-model', displayName: 'Again' }],
+  ],
+  ['a catalog that is not a list', { models: [goodEntry] }],
+  ['no catalog at all', undefined],
+])('fails the whole catalog for %s', async (_name, payload) => {
+  const catalog = new ModelCatalog(async () => payload as never);
+  await expect(catalog.list()).rejects.toMatchObject({
+    code: 'invalid_model_catalog',
+    status: 502,
+  });
+  const snapshot = catalog.snapshot();
+  expect(snapshot.models).toEqual([]); // nothing partly accepted
+  expect(snapshot.fetchedAt).toBeUndefined();
+  expect(snapshot.error?.code).toBe('invalid_model_catalog');
+});
+
+it('keeps the previous good list, marked stale, when a refresh comes back malformed', async () => {
+  let payload: unknown = [goodEntry];
+  const catalog = new ModelCatalog(async () => payload as never);
+  await catalog.list();
+  payload = [goodEntry, { slug: '', displayName: 'x' }];
+  await expect(catalog.refresh()).rejects.toMatchObject({
+    code: 'invalid_model_catalog',
+  });
+  expect(catalog.snapshot()).toMatchObject({
+    models: [goodEntry],
+    stale: true,
+    error: { code: 'invalid_model_catalog' },
+  });
+});
+
+it('names the position and the problem, never the content', async () => {
   const catalog = new ModelCatalog(
     async () =>
       [
-        { slug: 'good-model', displayName: '  Good  ' },
-        { slug: 'good-model', displayName: 'duplicate' },
-        { slug: '../bad', displayName: 'x' },
-        { slug: '<script>', displayName: 'x' },
-        { slug: 'no-name' },
-        { displayName: 'no slug' },
-        null,
-        { slug: 'x'.repeat(200), displayName: 'long' },
+        goodEntry,
+        { slug: 'ok', displayName: 'secret-internal-detail'.padEnd(250, 'x') },
       ] as never,
   );
-  expect(await catalog.list()).toEqual([
-    { slug: 'good-model', displayName: 'Good' },
-    { slug: 'no-name', displayName: 'no-name' },
-  ]);
+  const error = await catalog.list().catch((e) => e);
+  expect(error.message).toContain('entry 2 has an invalid display name');
+  expect(error.message).not.toContain('secret-internal-detail');
 });

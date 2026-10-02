@@ -53,7 +53,98 @@ To check a real account end to end, run `node --import tsx experiments/chatgpt-p
 
 `siwc-compat.ts` corrects one SIWC difference. SIWC streams a complete `function_call` in `response.output_item.done` but leaves `response.completed.output` empty. TanStack's Responses adapter derives `finishReason` from that array, so a turn that called a tool would finish as `stop` and the loop would not run the tool. The shim changes `stop` to `tool_calls` only when a complete tool call was observed in the same turn.
 
-`chatgpt-devkit.ts` is the only code that knows about the DevKit. Its public client can sign in and list models but does not expose an access token, so the adapter has `listModels()` refresh the session and then reads the stored token. That read depends on the DevKit's internal storage format; asking the DevKit for a public `getAccessToken()` would remove it.
+`chatgpt-devkit.ts` and `devkit-compat.ts` are the only code that knows about the DevKit. Its public client can sign in, list models and sign out but does not expose an access token, so the token is read from its stored state through a `TokenSource`, checked against the minimum shape OpenDots relies on, and renewed only by asking the DevKit to refresh (it does so inside authenticated calls) and then reading the state again. See the compatibility contract below for what is public, what is not, and what happens when the DevKit changes.
+
+## DevKit compatibility contract
+
+OpenDots talks to the Sign in with ChatGPT DevKit, which is a separate project with no published releases (its package is private and stays at `0.1.0`). Part of what OpenDots uses is the DevKit's public API; part is not. This section is the whole list, so an update can be reviewed against it. All of it lives in `src/server/devkit-compat.ts` and `src/server/chatgpt-devkit.ts`; nothing else in OpenDots touches DevKit internals.
+
+### What is public, what is not
+
+| What OpenDots uses                                                                                                                                                         | Status                                                                                                |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `createChatGPT(config)`; `signIn`, `getSession`, `listProfiles`, `listModels`, `disconnect`; `config.openBrowser`; the `SessionState` shape (`status`, `sharing`, `error`) | Public API                                                                                            |
+| The `CredentialEncryption` hook (`id`, `isAvailable`, `encrypt`, `decrypt`) and its documented behaviour                                                                   | Public, documented                                                                                    |
+| Error `code` and `retryable`                                                                                                                                               | Public fields; the set of codes is **open** (some come from the server), so no code list is relied on |
+| **`ConnectionStore`** (`dist/storage.js`), imported by file path because the package exports only its main entry                                                           | **Internal**                                                                                          |
+| The **stored state** it returns, to read the access token (the DevKit marks these types internal)                                                                          | **Internal**                                                                                          |
+| `expiresAt` is a millisecond timestamp; a token is refreshed when 60 s or less remain; refreshing happens inside authenticated calls such as `listModels()`                | Observed behaviour, not promised                                                                      |
+| File names in the DevKit's state directory (`chatgpt-auth.json`, `chatgpt-host.json`, `.chatgpt-auth.lock`)                                                                | **Internal**                                                                                          |
+| `listModels()` returns only models the DevKit marks `visibility: "list"`, as a list, with slugs of up to 200 characters                                                    | Observed behaviour                                                                                    |
+
+The DevKit has no public way to get an access token (and its `streamResponse()` cannot carry tools), so the token is read from its stored state. That is the one deliberate use of internals.
+
+### Two formats, two versions
+
+These are different things and are never called just "version":
+
+- **Auth envelope version, `3`** (`DEVKIT_AUTH_ENVELOPE_VERSION`): the outer JSON in `chatgpt-auth.json` (`{version, provider, ciphertext}`).
+- **Stored-state version, `2`** (`DEVKIT_STORED_STATE_VERSION`): what that ciphertext decrypts to.
+
+Neither is the DevKit's package version.
+
+### How compatibility is decided
+
+By what the DevKit does, never by a version or a hash alone:
+
+| Result                    | Meaning                                                                                                                       |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **`devkit_incompatible`** | A runtime contract check failed. Refused; shown with the reason.                                                              |
+| **`verified`**            | The contract holds and the build is recorded below.                                                                           |
+| **`untested`**            | The contract holds but the build is not recorded. **Used normally**, with a small notice in the Model dialog and in `status`. |
+
+`CHATGPT_DEVKIT_STRICT=1` additionally refuses `untested` builds.
+
+The runtime contract:
+
+- **At load:** the DevKit has `createChatGPT`, a `ConnectionStore` with `read` and `withLock`, and a client with the five methods used. Otherwise the DevKit is refused at start.
+- **Before every DevKit call, in the persistent store:** the saved `chatgpt-auth.json` must be an envelope of version 3. An unrecognized or older format is **never** handed to the DevKit: nothing is decrypted, read, migrated, written or reset, and the file is left byte for byte as it was. (The DevKit migrates and rewrites formats it knows when it reads them; this keeps that away from files OpenDots did not create.) OpenDots never migrates a format it does not recognize either.
+- **Whenever it reads the stored state:** it checks only the minimum it relies on: stored-state version 2; `profiles` is a list; the active profile is in it and has a known status; a connected profile has a `credentials` object with a non-empty access token and a finite `expiresAt` in the millisecond range. A state with nothing signed in is fine: no active profile, or a profile whose status is `disconnected` or `reauth_required` (such a profile has no credentials). A `connected` profile **without** credentials is not allowed by the stored-state contract. **Anything that does not fit is `devkit_incompatible`, never "signed out".** Messages name the field, never a value.
+- **After requesting a refresh:** the state is read again and the token must have at least 30 s left. A successful `listModels()` is not taken to mean the token is fresh. OpenDots never refreshes OAuth tokens itself.
+- **Status:** an unknown connection status, or an error beside a signed-out status that the saved state does not explain, is **unavailable**, not signed out. The DevKit remembers an earlier request's error (a failed revocation, an expired refresh) on the session; whether that is a real failure is decided by reading the saved state, never by the error's name.
+
+When any of this fails, the saved credentials are left untouched and nothing falls back to something else: no switch to the API key, no `streamResponse()`, no home-made refresh.
+
+### Verified builds
+
+`VERIFIED_DEVKIT_BUILDS` in `devkit-compat.ts` records, per build: the upstream commit, the package name and version, a fingerprint of each selected runtime file, and an aggregate fingerprint. Currently:
+
+|           |                                                                    |
+| --------- | ------------------------------------------------------------------ |
+| Commit    | `f723814abdccec135b519c451fb6e1992ee5e933`                         |
+| Package   | `@siwc/local` `0.1.0`                                              |
+| Aggregate | `66752b92d315e4dcb2ded1c8868d1aaf0e60b71b5463ac602fdae2d536ed0708` |
+
+**Fingerprint procedure.** Take `index.js`, `storage.js`, `oauth.js`, `models.js` and `errors.js` from the DevKit's `dist/`, in that order. The file fingerprint is the SHA-256 of the file's bytes. The aggregate is the SHA-256 of the text made of one line `<file name>:<file fingerprint>\n` per file, in that order. `npm run chatgpt-plan -- devkit` prints exactly these for the DevKit at `CHATGPT_DEVKIT_DIST`. The commit cannot be read from a build; it is recorded by hand.
+
+An unknown fingerprint alone never blocks use. It also changes with the compiler used to build, which is why the build table is an allow-list for "verified" and not a gate.
+
+### Updating the DevKit
+
+1. Build the new DevKit and point `CHATGPT_DEVKIT_DIST` at it.
+2. `npm run chatgpt-plan -- status` shows whether it is usable and whether it is `verified` or `untested`.
+3. Run the contract tests against it: `CHATGPT_DEVKIT_DIST=... npx vitest run tests/devkit-contract.test.ts tests/devkit-compat.test.ts tests/chatgpt-devkit-hardening.test.ts`. A failure names the assumption that changed; decide, and update `devkit-compat.ts` and this document.
+4. Check on a real account (`experiments/chatgpt-plan-smoke.ts`, Luna and Astra).
+5. Record the build (`npm run chatgpt-plan -- devkit`, then add the commit) in `VERIFIED_DEVKIT_BUILDS`.
+
+### Models
+
+The models OpenDots treats as available are exactly those the DevKit's `listModels()` returns, and nothing else. A model the DevKit does not list (including ones it hides with `visibility` other than `"list"`) is not guessed at and cannot be typed in: it is refused with the list of what is available. If the DevKit's list does not match the expected shape (an entry that is not an object, a slug or display name that is missing, empty, or longer than 200 characters, a repeated slug, or a response that is not a list), **the whole list fails** (`invalid_model_catalog`). Nothing is dropped and no part of a bad list is used; the last good list stays, marked stale. What counts as well-formed is exactly what the DevKit guarantees, and nothing more: a slug and a display name are each text that is not empty once trimmed and at most 200 characters, and no slug is repeated. OpenDots adds no character set of its own, so a model the DevKit lists is never rejected for how it is spelled. Which model may be selected or run is decided only by whether the account's live list contains it.
+
+### If the DevKit gets a public token API
+
+Where the token comes from is behind one interface, `TokenSource`, with a single implementation today (the stored state). If the DevKit adds a public way to obtain a token, or better an authorized `fetch` that never exposes the token to OpenDots, a second implementation is added then, and the stored-state one, the `ConnectionStore` import and the envelope check are removed. Nothing is guessed in advance: no feature detection for an API that does not exist.
+
+### Removing the SIWC compatibility shim
+
+`src/server/siwc-compat.ts` exists because SIWC streams a complete `function_call` in `response.output_item.done` but leaves `response.completed.output` empty, and TanStack's Responses adapter derives `finishReason` from that array, so a turn that called a tool would end as `stop` and the tool would never run. The shim rewrites `stop` to `tool_calls` only after a tool call was completely observed in the same turn.
+
+It can be removed when **either**:
+
+- SIWC fills `response.completed.output` for function calls (check with `experiments/siwc-shim-probe.ts` on a real account, over several runs), **or**
+- the TanStack adapter derives `finishReason` from the items it saw during the stream.
+
+Both show up as the test "premise: without the shim, a SIWC-shaped tool call ends as stop and the tool never runs" failing in `tests/siwc-contract.test.ts`. The shim is harmless if SIWC starts filling the output (also tested). What it must keep doing is covered by the behaviour tests in that file (tool-call end, rewritten finish reason, the tool runs once, the next model iteration happens). A change in `@tanstack/openai-base`, `@tanstack/ai-openai` or `@tanstack/ai` makes a version-review test fail as a prompt to look again; the behaviour tests, not the version number, decide whether it still works.
 
 ## Credential storage
 
@@ -80,7 +171,8 @@ What this protects: copies of the state directory (backups, sync, disk images) a
 ### Management commands
 
 ```sh
-npm run chatgpt-plan -- status           # read-only; never creates a key or file
+npm run chatgpt-plan -- status           # read-only; never creates a key or file; also reports the DevKit build
+npm run chatgpt-plan -- devkit           # the DevKit build's fingerprints, as a table entry
 npm run chatgpt-plan -- sign-out         # revoke tokens; keep the key and registration
 npm run chatgpt-plan -- reset            # shows what would be removed, changes nothing
 npm run chatgpt-plan -- reset --yes      # revoke if possible, then delete files and the Keychain item

@@ -86,10 +86,18 @@ type Fake = {
 };
 const g = globalThis as unknown as { __fakeDevKit: Fake };
 const connected = (accessToken: string, expiresAt: number) => ({
+  version: 2, // the decrypted stored-state version, not the file envelope's
   activeProfileId: 'p',
   profiles: [
     { id: 'p', status: 'connected', credentials: { accessToken, expiresAt } },
   ],
+});
+
+// The auth file's outer envelope (version 3), as the DevKit writes it.
+const ENVELOPE = JSON.stringify({
+  version: 3,
+  provider: 'opendots-keychain-aes-256-gcm-v1',
+  ciphertext: 'AAAA',
 });
 
 let dist: string;
@@ -302,7 +310,7 @@ describe('Keychain-backed storage', () => {
     const first = await keychain(backend);
     await first.status();
     await first.close();
-    await writeFile(join(stateDir, 'chatgpt-auth.json'), '{"version":3}', {
+    await writeFile(join(stateDir, 'chatgpt-auth.json'), ENVELOPE, {
       mode: 0o600,
     });
     backend.keys.clear(); // Keychain wiped, or a restore on another machine
@@ -314,7 +322,7 @@ describe('Keychain-backed storage', () => {
     expect(backend.keys.size).toBe(0);
     expect(backend.sets).toBe(1); // only the original creation
     expect(await readFile(join(stateDir, 'chatgpt-auth.json'), 'utf8')).toBe(
-      '{"version":3}',
+      ENVELOPE,
     );
     const error = await session.auth.getAccessToken().catch((e) => e);
     expect(error).toMatchObject({

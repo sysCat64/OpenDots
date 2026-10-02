@@ -12,10 +12,7 @@ import type {
   Task,
   TaskEvent,
 } from '../shared/types.js';
-import {
-  MODEL_SLUG_PATTERN,
-  type ModelSelection,
-} from '../shared/model-types.js';
+import { isModelText, type ModelSelection } from '../shared/model-types.js';
 
 export type Claim = Task & { lease: string };
 const defaults: Settings = {
@@ -57,7 +54,7 @@ export class Store {
         selection.provider = saved.provider;
       if (
         typeof saved.chatgptModel === 'string' &&
-        MODEL_SLUG_PATTERN.test(saved.chatgptModel)
+        isModelText(saved.chatgptModel)
       )
         selection.chatgptModel = saved.chatgptModel;
       return selection;

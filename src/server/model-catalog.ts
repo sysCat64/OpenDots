@@ -1,6 +1,6 @@
 import type { ChatGPTPlanModel } from './chatgpt-plan.js';
 import { ChatGPTPlanError } from './chatgpt-plan.js';
-import { MODEL_SLUG_PATTERN } from '../shared/model-types.js';
+import { isModelText } from '../shared/model-types.js';
 
 // The one cache of the models an account can use. The UI and the runtime
 // provider both read it, so they cannot disagree about what is available.
@@ -22,26 +22,35 @@ export interface CatalogOptions {
   now?: () => number;
 }
 
-// The list comes from outside: keep only well-formed entries.
-function sanitize(models: unknown): ChatGPTPlanModel[] {
-  if (!Array.isArray(models)) return [];
+// The list comes from outside, and the DevKit guarantees its shape: a list of
+// entries, each with a slug and a display name. Anything else means the
+// contract has drifted. A repeated slug is also rejected, not because the
+// DevKit promises uniqueness, but because OpenDots selects models by slug and a
+// duplicate would make a selection ambiguous. Problems are reported, not
+// repaired: no entry is dropped, nothing is partly accepted, and the previous
+// list stays as it was.
+// Messages name the entry's position and the problem, never its content.
+function validate(models: unknown): ChatGPTPlanModel[] {
+  const invalid = (detail: string) =>
+    new ChatGPTPlanError(
+      'invalid_model_catalog',
+      `The model list did not match the expected format (${detail}). Update OpenDots or the Sign in with ChatGPT DevKit.`,
+      502,
+    );
+  if (!Array.isArray(models)) throw invalid('it is not a list');
   const seen = new Set<string>();
-  const clean: ChatGPTPlanModel[] = [];
-  for (const entry of models) {
-    const slug = (entry as { slug?: unknown })?.slug;
-    if (typeof slug !== 'string' || !MODEL_SLUG_PATTERN.test(slug)) continue;
-    if (seen.has(slug)) continue;
+  return models.map((entry, index) => {
+    const at = `entry ${index + 1}`;
+    if (typeof entry !== 'object' || entry === null)
+      throw invalid(`${at} is not an object`);
+    const { slug, displayName } = entry as Record<string, unknown>;
+    if (!isModelText(slug)) throw invalid(`${at} has an invalid slug`);
+    if (seen.has(slug)) throw invalid(`${at} repeats an earlier slug`);
     seen.add(slug);
-    const name = (entry as { displayName?: unknown }).displayName;
-    clean.push({
-      slug,
-      displayName:
-        typeof name === 'string' && name.trim()
-          ? name.trim().slice(0, 100)
-          : slug,
-    });
-  }
-  return clean;
+    if (!isModelText(displayName))
+      throw invalid(`${at} has an invalid display name`);
+    return { slug, displayName: displayName.trim() };
+  });
 }
 
 export class ModelCatalog {
@@ -107,7 +116,7 @@ export class ModelCatalog {
     const timer = AbortSignal.timeout(this.timeoutMs);
     const run = (async () => {
       try {
-        const models = sanitize(await abortable(this.load(timer), timer));
+        const models = validate(await abortable(this.load(timer), timer));
         if (generation === this.generation) {
           this.models = models;
           this.fetchedAt = this.now();

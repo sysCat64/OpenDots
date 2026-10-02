@@ -280,3 +280,63 @@ it('the banner prompts without blocking', () => {
     ),
   ).toBe('');
 });
+
+it('shows a small warning for an untested DevKit build, and nothing extra for a verified one', () => {
+  const untested = render(
+    modelStatus({
+      chatgpt: {
+        state: 'signed_in',
+        model: { effective: 'gpt-5.5' },
+        devkit: { compatibility: 'untested', version: '0.2.0' },
+      },
+    }),
+    list(),
+  );
+  expect(untested).toContain('is not one OpenDots was tested with');
+  expect(untested).toContain('role="note"');
+  const verified = render(
+    modelStatus({
+      chatgpt: {
+        state: 'signed_in',
+        model: { effective: 'gpt-5.5' },
+        devkit: { compatibility: 'verified', version: '0.1.0' },
+      },
+    }),
+    list(),
+  );
+  expect(verified).not.toContain('tested with');
+  expect(verified).not.toContain('role="note"');
+  // The warning lives in the dialog only; the page-level banner stays quiet.
+  expect(
+    renderToStaticMarkup(
+      <ModelBanner
+        status={modelStatus({
+          chatgpt: {
+            state: 'signed_in',
+            model: { effective: 'gpt-5.5' },
+            devkit: { compatibility: 'untested' },
+          },
+        })}
+        onOpen={none}
+      />,
+    ),
+  ).toBe('');
+});
+
+it('shows an incompatible DevKit as an unavailable connection with its reason', () => {
+  const html = render(
+    modelStatus({
+      chatgpt: {
+        state: 'unavailable',
+        failure: {
+          code: 'devkit_incompatible',
+          message:
+            'This DevKit is not supported by this OpenDots (expiresAt is not a millisecond timestamp).',
+        },
+      },
+    }),
+  );
+  expect(html).toContain('Unavailable');
+  expect(html).toContain('not supported by this OpenDots');
+  expect(html).not.toContain('Sign in with ChatGPT</button>'); // signing in cannot help
+});

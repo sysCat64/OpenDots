@@ -54,6 +54,7 @@ const models = new ModelService({
         createSession: (openBrowser) =>
           createChatGPTPlanSession({
             devkitDist: process.env.CHATGPT_DEVKIT_DIST!,
+            devkitStrict: process.env.CHATGPT_DEVKIT_STRICT === '1',
             credentialStore: credentialStore as 'ephemeral' | 'keychain',
             stateDir: process.env.CHATGPT_STATE_DIR || undefined,
             openBrowser,

@@ -3,6 +3,7 @@ import { readdir, rm, rmdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { CredentialStoreError } from './credential-errors.js';
+import { DEVKIT_LAYOUT } from './devkit-compat.js';
 import {
   ensurePrivateDir,
   readPrivateFile,
@@ -17,11 +18,6 @@ import {
 const KEY_BYTES = 32;
 export const KEYCHAIN_SERVICE = 'OpenDots ChatGPT plan credential key';
 
-// Files the DevKit owns in the state directory (names are its storage layout)
-// and the ones OpenDots adds.
-const DEVKIT_AUTH_FILE = 'chatgpt-auth.json';
-const DEVKIT_HOST_FILE = 'chatgpt-host.json';
-const DEVKIT_LOCK = '.chatgpt-auth.lock';
 const KEY_FILE = 'opendots-key.json';
 const KEY_LOCK = '.opendots-key.lock';
 
@@ -173,7 +169,7 @@ export async function openPersistentKey(options: {
   const { stateDir, backend } = options;
   await ensurePrivateDir(stateDir);
   return withFileLock(join(stateDir, KEY_LOCK), async () => {
-    const saved = await exists(join(stateDir, DEVKIT_AUTH_FILE));
+    const saved = await exists(join(stateDir, DEVKIT_LAYOUT.authFile));
     let keyId = await readKeyId(stateDir);
     if (!keyId) {
       if (saved) throw new CredentialStoreError('credential_key_missing');
@@ -221,8 +217,8 @@ export async function inspectPersistentCredentials(options: {
     stateDir,
     stateDirExists: listing !== undefined,
     files: {
-      auth: !!listing?.includes(DEVKIT_AUTH_FILE),
-      host: !!listing?.includes(DEVKIT_HOST_FILE),
+      auth: !!listing?.includes(DEVKIT_LAYOUT.authFile),
+      host: !!listing?.includes(DEVKIT_LAYOUT.hostFile),
       key: !!listing?.includes(KEY_FILE),
     },
     keychainItem: 'unknown',
@@ -250,8 +246,13 @@ export async function inspectPersistentCredentials(options: {
 // Only files OpenDots or the DevKit created here; anything else in the
 // directory is left alone.
 const ownedName = (name: string) =>
-  [DEVKIT_AUTH_FILE, DEVKIT_HOST_FILE, DEVKIT_LOCK, KEY_FILE].includes(name) ||
-  /^\.chatgpt-auth\..*\.tmp$/.test(name) ||
+  [
+    DEVKIT_LAYOUT.authFile,
+    DEVKIT_LAYOUT.hostFile,
+    DEVKIT_LAYOUT.lockDirectory,
+    KEY_FILE,
+  ].includes(name) ||
+  DEVKIT_LAYOUT.isTemporaryFile(name) ||
   /^opendots-key\.json\..*\.tmp$/.test(name) ||
   /^\.opendots-key\.lock\.stale-/.test(name);
 

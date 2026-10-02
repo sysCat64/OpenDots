@@ -1,3 +1,13 @@
+// HISTORICAL PROBE: not production code, and not a model of how to integrate.
+//
+// This is one of the proofs of concept that led to the ChatGPT plan provider.
+// It reaches into the Sign in with ChatGPT DevKit's INTERNAL storage
+// (dist/storage.js, ConnectionStore) to read the access token, with a throwaway
+// in-memory key and no compatibility checks. The production implementation is
+// src/server/chatgpt-devkit.ts and src/server/devkit-compat.ts, which validate
+// what they read and refuse what they do not recognize. Kept for reference only;
+// it may stop working whenever the DevKit changes.
+//
 import {
   createCipheriv,
   createDecipheriv,
@@ -37,11 +47,11 @@ import {
 
 import {
   createChatGPT,
-} from "../../sign-in-with-chatgpt-devkit/packages/local/dist/index.js";
+} from "../../../sign-in-with-chatgpt-devkit/packages/local/dist/index.js";
 
 import {
   ConnectionStore,
-} from "../../sign-in-with-chatgpt-devkit/packages/local/dist/storage.js";
+} from "../../../sign-in-with-chatgpt-devkit/packages/local/dist/storage.js";
 
 
 // ============================================================

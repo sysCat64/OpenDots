@@ -1,5 +1,6 @@
 import type { ChatGPTPlanSession } from '../../src/server/chatgpt-devkit.js';
 import type { ChatGPTPlanModel } from '../../src/server/chatgpt-plan.js';
+import type { DevKitCompatibility } from '../../src/server/devkit-compat.js';
 import { ModelCatalog } from '../../src/server/model-catalog.js';
 import {
   ModelService,
@@ -37,6 +38,14 @@ export class FakeSession {
   signInUrl = AUTH_URL;
   signInSignal?: AbortSignal;
   readonly credentialStore = 'ephemeral' as const;
+  devkit: DevKitCompatibility = {
+    compatibility: 'verified',
+    package: '@siwc/local',
+    version: '0.1.0',
+    commit: 'f723814abdccec135b519c451fb6e1992ee5e933',
+    aggregate: 'a'.repeat(64),
+    files: {},
+  };
   readonly models = new ModelCatalog(async () => {
     this.calls.load += 1;
     return this.available;

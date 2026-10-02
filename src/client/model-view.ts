@@ -35,6 +35,8 @@ export interface ModelView {
   signInError?: string;
   failure?: string;
   recovery?: string;
+  /** Only for a DevKit build OpenDots was not verified with. */
+  devkitWarning?: string;
 }
 
 export function describeModel(status: ModelStatus): ModelView {
@@ -147,6 +149,12 @@ export function describeModel(status: ModelStatus): ModelView {
     signInError: chatgpt.signInError?.message,
     failure: chatgpt.failure?.message,
     recovery: chatgpt.recovery,
+    devkitWarning:
+      chatgpt.devkit?.compatibility === 'untested'
+        ? `This Sign in with ChatGPT DevKit build${
+            chatgpt.devkit.version ? ` (${chatgpt.devkit.version})` : ''
+          } passed the compatibility checks but is not one OpenDots was tested with.`
+        : undefined,
   };
 }
 

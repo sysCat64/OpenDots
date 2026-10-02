@@ -50,7 +50,7 @@ export function modelRoutes(models: ModelService) {
   app.put('/model/chatgpt/model', async (c) => {
     const { model } = await body(
       c.req.raw,
-      z.strictObject({ model: z.string().min(1).max(100) }),
+      z.strictObject({ model: z.string().min(1).max(200) }),
       'Choose a model from the list.',
     );
     return c.json(await models.setChatGPTModel(model));

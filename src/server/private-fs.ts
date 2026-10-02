@@ -23,7 +23,10 @@ export async function ensurePrivateDir(directory: string) {
 
 // Undefined when the file does not exist. Refuses links and any file that is
 // not owner-only, rather than quietly trusting it.
-export async function readPrivateFile(path: string) {
+export async function readPrivateFile(
+  path: string,
+  maxBytes = MAX_PRIVATE_FILE_BYTES,
+) {
   let file;
   try {
     file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -35,7 +38,7 @@ export async function readPrivateFile(path: string) {
     const info = await file.stat();
     if (
       !info.isFile() ||
-      info.size > MAX_PRIVATE_FILE_BYTES ||
+      info.size > maxBytes ||
       (info.mode & 0o077) !== 0 ||
       !ownedByUser(info.uid)
     )

@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCli, type CliDeps } from '../src/server/chatgpt-plan-cli.js';
+import type { DevKitInspection } from '../src/server/chatgpt-devkit.js';
 import { openPersistentKey } from '../src/server/credential-keys.js';
 import { FakeBackend } from './fixtures/key-backend.js';
 
@@ -31,7 +32,19 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(join(stateDir, '..'), { recursive: true, force: true });
 });
+const verified: DevKitInspection = {
+  outcome: 'ok',
+  compatibility: {
+    compatibility: 'verified',
+    package: '@siwc/local',
+    version: '0.1.0',
+    commit: 'f723814abdccec135b519c451fb6e1992ee5e933',
+    aggregate: 'ab'.repeat(32),
+    files: { 'index.js': 'cd'.repeat(32) },
+  },
+};
 const deps = (extra: Partial<CliDeps> = {}): CliDeps => ({
+  inspectDevKit: async () => verified,
   backend,
   stateDir,
   devkitDist: '/devkit',
@@ -176,4 +189,93 @@ it('reset also removes an empty OpenDots parent folder, but never a non-empty on
 it('prints usage for an unknown command', async () => {
   expect(await runCli(['frobnicate'], deps())).toBe(2);
   expect(output()).toMatch(/Usage/);
+});
+
+describe('DevKit compatibility in status', () => {
+  const inspecting = (found: DevKitInspection) =>
+    deps({ inspectDevKit: async () => found });
+
+  it('names a verified build and its commit, and adds nothing alarming', async () => {
+    expect(await runCli(['status'], deps())).toBe(0);
+    expect(output()).toMatch(
+      /DevKit:\s+@siwc\/local 0\.1\.0, verified build \(commit f723814\)/,
+    );
+    expect(output()).not.toMatch(/untested|incompatible/);
+  });
+
+  it('shows an untested build as such, still usable', async () => {
+    const found: DevKitInspection = {
+      outcome: 'ok',
+      compatibility: {
+        ...verified.compatibility!,
+        compatibility: 'untested',
+        commit: undefined,
+      },
+    };
+    expect(await runCli(['status'], inspecting(found))).toBe(0);
+    expect(output()).toMatch(
+      /untested build \(fingerprint abababab…\); compatibility checks passed/,
+    );
+  });
+
+  it('shows strict mode refusing an unrecorded build, and stops there', async () => {
+    const found: DevKitInspection = {
+      outcome: 'incompatible',
+      compatibility: {
+        ...verified.compatibility!,
+        compatibility: 'untested',
+        commit: undefined,
+      },
+      reason: 'strict mode refuses a build that is not recorded as verified',
+    };
+    await saveSession();
+    expect(
+      await runCli(['status'], { ...inspecting(found), devkitStrict: true }),
+    ).toBe(1);
+    expect(output()).toMatch(
+      /incompatible \(@siwc\/local 0\.1\.0\) - strict mode refuses .* \[strict mode\]/,
+    );
+    expect(session.status).not.toHaveBeenCalled(); // no session is opened on a refused build
+  });
+
+  it('reports a contract violation with its reason', async () => {
+    expect(
+      await runCli(
+        ['status'],
+        inspecting({
+          outcome: 'incompatible',
+          reason: 'ConnectionStore.read is missing',
+        }),
+      ),
+    ).toBe(1);
+    expect(output()).toMatch(
+      /DevKit:\s+incompatible - ConnectionStore\.read is missing/,
+    );
+  });
+
+  it('says plainly when the path is wrong or unset', async () => {
+    expect(await runCli(['status'], inspecting({ outcome: 'not_found' }))).toBe(
+      1,
+    );
+    expect(output()).toMatch(/not found: CHATGPT_DEVKIT_DIST must point/);
+    lines.length = 0;
+    expect(await runCli(['status'], deps({ devkitDist: undefined }))).toBe(0);
+    expect(output()).toMatch(/not configured \(set CHATGPT_DEVKIT_DIST\)/);
+  });
+
+  it('prints the table entry for a build, to record it after review', async () => {
+    expect(await runCli(['devkit'], deps())).toBe(0);
+    const entry = JSON.parse(lines.slice(1).join('\n'));
+    expect(entry).toMatchObject({
+      package: '@siwc/local',
+      version: '0.1.0',
+      aggregate: 'ab'.repeat(32),
+      files: { 'index.js': 'cd'.repeat(32) },
+    });
+    expect(entry.commit).toMatch(/upstream commit/); // cannot be read from a build
+  });
+
+  it('refuses to print an entry when there is nothing to inspect', async () => {
+    expect(await runCli(['devkit'], deps({ devkitDist: undefined }))).toBe(1);
+  });
 });

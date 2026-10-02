@@ -67,11 +67,21 @@ it('ignores anything in a damaged or tampered row', () => {
   write(
     JSON.stringify({
       provider: 'evil',
-      chatgptModel: '../etc/passwd',
+      chatgptModel: '   ',
       apiKey: 'sk-secret',
     }),
   );
   expect(store.modelSelection()).toEqual({});
+  write(JSON.stringify({ chatgptModel: 5 }));
+  expect(store.modelSelection()).toEqual({});
+  write(JSON.stringify({ chatgptModel: 'x'.repeat(201) }));
+  expect(store.modelSelection()).toEqual({});
+  // Spelling is not restricted; whether a model may be used is decided by the
+  // account's live list when it is selected and again on every request.
+  write(JSON.stringify({ chatgptModel: 'openai/gpt-x@2026+beta' }));
+  expect(store.modelSelection()).toEqual({
+    chatgptModel: 'openai/gpt-x@2026+beta',
+  });
   write(
     JSON.stringify({ provider: 'chatgpt-plan', chatgptModel: 'gpt-5.6-luna' }),
   );

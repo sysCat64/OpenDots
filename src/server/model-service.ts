@@ -11,7 +11,7 @@ import {
   type ModelProvider,
 } from './model-provider.js';
 import {
-  MODEL_SLUG_PATTERN,
+  isModelText,
   type ChatGPTState,
   type ModelFailure,
   type ModelList,
@@ -103,6 +103,12 @@ export const modelStatusSchema = z.strictObject({
     failure: failureSchema.optional(),
     signInError: failureSchema.optional(),
     notice: z.literal('revocation_unconfirmed').optional(),
+    devkit: z
+      .strictObject({
+        compatibility: z.enum(['verified', 'untested']),
+        version: z.string().optional(),
+      })
+      .optional(),
     recovery: z.string().optional(),
     model: z.strictObject({
       effective: z.string().optional(),
@@ -220,14 +226,16 @@ export class ModelService {
       this.failure =
         error instanceof CredentialStoreError
           ? { code: error.code, message: credentialFailureHint(error.code) }
-          : {
-              code: 'devkit_unavailable',
-              message:
-                error instanceof Error &&
-                /CHATGPT_DEVKIT_DIST/.test(error.message)
-                  ? error.message
-                  : 'The Sign in with ChatGPT component could not be started.',
-            };
+          : error instanceof ChatGPTPlanError
+            ? { code: error.code, message: error.message }
+            : {
+                code: 'devkit_unavailable',
+                message:
+                  error instanceof Error &&
+                  /CHATGPT_DEVKIT_DIST/.test(error.message)
+                    ? error.message
+                    : 'The Sign in with ChatGPT component could not be started.',
+              };
       return;
     }
     this.kickCheck(true);
@@ -324,6 +332,16 @@ export class ModelService {
         ...(this.state === 'signed_out' && this.notice
           ? { notice: this.notice }
           : {}),
+        ...(this.session
+          ? {
+              devkit: {
+                compatibility: this.session.devkit.compatibility,
+                ...(this.session.devkit.version
+                  ? { version: this.session.devkit.version }
+                  : {}),
+              },
+            }
+          : {}),
         ...(failure && RECOVERY_CODES.has(failure.code)
           ? { recovery: RECOVERY_COMMAND }
           : {}),
@@ -370,9 +388,7 @@ export class ModelService {
     const saved = selection.chatgptModel;
     const configured = this.options.server.chatgptModel;
     const serverDefault =
-      configured && MODEL_SLUG_PATTERN.test(configured)
-        ? configured
-        : undefined;
+      configured && isModelText(configured) ? configured : undefined;
     let effective: string | undefined;
     let source: 'ui' | 'server' | undefined;
     if (saved && has(saved) !== false) {
@@ -420,7 +436,7 @@ export class ModelService {
   }
 
   async setChatGPTModel(slug: string): Promise<ModelStatus> {
-    if (!MODEL_SLUG_PATTERN.test(slug))
+    if (!isModelText(slug))
       throw new ModelServiceError(
         'invalid_model',
         'Choose a model from the list.',
@@ -579,6 +595,15 @@ export class ModelService {
       },
       (error: unknown) => {
         if (epoch !== this.epoch) return;
+        if (
+          error instanceof ChatGPTPlanError &&
+          error.code === 'devkit_incompatible'
+        ) {
+          // The DevKit saved the session, but in a form OpenDots cannot use.
+          this.state = 'unavailable';
+          this.failure = { code: error.code, message: error.message };
+          return;
+        }
         this.state = 'signed_out';
         // An abort here is not a failure to report: either the owner cancelled
         // (the epoch changed, so we returned above) or captureUrl already

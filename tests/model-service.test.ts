@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatGPTPlanError } from '../src/server/chatgpt-plan.js';
+import { DevKitIncompatibleError } from '../src/server/devkit-compat.js';
 import {
   ModelService,
   isSafeAuthorizationUrl,
@@ -521,8 +522,8 @@ describe('model choice', () => {
     expect(h.store.modelSelection().chatgptModel).toBe('gpt-7-new');
   });
 
-  it.each(['', '../x', 'a b', '<script>', 'x'.repeat(101)])(
-    'rejects the malformed name %j',
+  it.each(['', '   ', 'x'.repeat(201)])(
+    'rejects the name %j as malformed, before looking at the account',
     async (name) => {
       const h = await signedIn();
       await expect(h.service.setChatGPTModel(name)).rejects.toMatchObject({
@@ -530,6 +531,38 @@ describe('model choice', () => {
       });
     },
   );
+
+  it.each(['../x', 'a b', '<script>', 'gpt-9-nope'])(
+    'refuses %j because the account does not list it, however it is spelled',
+    async (name) => {
+      const h = await signedIn();
+      await expect(h.service.setChatGPTModel(name)).rejects.toMatchObject({
+        status: 409,
+        code: 'model_unavailable',
+      });
+      expect(h.store.modelSelection().chatgptModel).toBeUndefined();
+    },
+  );
+
+  it('accepts and uses any slug the account lists, whatever characters it has', async () => {
+    const h = await signedIn();
+    const unusual = 'openai/gpt-x@2026+beta (preview)';
+    h.session.available = [LUNA, { slug: unusual, displayName: 'Unusual' }];
+    await h.service.refreshModels();
+    const status = await h.service.setChatGPTModel(unusual);
+    expect(status.chatgpt.model).toMatchObject({
+      effective: unusual,
+      source: 'ui',
+      saved: unusual,
+      savedAvailable: true,
+    });
+    expect(h.store.modelSelection().chatgptModel).toBe(unusual);
+    h.service.setProvider('chatgpt-plan');
+    expect(h.service.provider.snapshot!()).toMatchObject({
+      kind: 'chatgpt-plan',
+      configured: true,
+    });
+  });
 
   it('needs a signed-in account', async () => {
     const h = make();
@@ -688,7 +721,14 @@ describe('what the browser can see', () => {
       ].sort(),
     );
     expect(Object.keys(status.chatgpt).sort()).toEqual(
-      ['canSignInHere', 'model', 'persistence', 'refreshing', 'state'].sort(),
+      [
+        'canSignInHere',
+        'devkit',
+        'model',
+        'persistence',
+        'refreshing',
+        'state',
+      ].sort(),
     );
   });
 });
@@ -724,5 +764,73 @@ describe('the provider the agent loop uses', () => {
     await h.service.close();
     expect(h.session.signInSignal?.aborted).toBe(true);
     expect(h.session.calls.close).toBe(1);
+  });
+});
+
+describe('DevKit compatibility', () => {
+  it("shows the build's compatibility and version, and nothing more of it", async () => {
+    const h = make();
+    await h.service.start();
+    expect(h.service.status().chatgpt.devkit).toEqual({
+      compatibility: 'verified',
+      version: '0.1.0',
+    });
+    h.session.devkit = {
+      ...h.session.devkit,
+      compatibility: 'untested',
+      version: undefined,
+      commit: undefined,
+    };
+    expect(h.service.status().chatgpt.devkit).toEqual({
+      compatibility: 'untested',
+    });
+    expect(JSON.stringify(h.service.status())).not.toContain('aaaaaaaa'); // no fingerprint
+  });
+
+  it('reports an incompatible DevKit at start as unavailable, with the reason, and offers no sign-in', async () => {
+    const store = make().store;
+    const service = new ModelService({
+      store,
+      apiKey: {},
+      server: {},
+      loopback: true,
+      chatgpt: {
+        credentialStore: 'ephemeral',
+        createSession: async () => {
+          throw new DevKitIncompatibleError('ConnectionStore.read is missing');
+        },
+      },
+    });
+    await service.start();
+    const status = service.status();
+    expect(status.chatgpt.state).toBe('unavailable');
+    expect(status.chatgpt.failure).toMatchObject({
+      code: 'devkit_incompatible',
+    });
+    expect(status.chatgpt.failure?.message).toContain(
+      'ConnectionStore.read is missing',
+    );
+    await expect(service.startSignIn()).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('a sign-in that saves an unusable session ends unavailable, not as a failed attempt', async () => {
+    const h = make();
+    await h.service.start();
+    await h.service.startSignIn();
+    // As the real session does: the saved state stays unusable on every check.
+    h.session.statusImpl = async () => ({
+      state: 'unavailable',
+      failure: {
+        code: 'devkit_incompatible',
+        hint: 'This DevKit is not supported.',
+      },
+    });
+    h.session.failSignIn(
+      new DevKitIncompatibleError('expiresAt is not a millisecond timestamp'),
+    );
+    await until(() => h.service.status().chatgpt.state === 'unavailable');
+    const status = h.service.status();
+    expect(status.chatgpt.failure?.code).toBe('devkit_incompatible');
+    expect(status.chatgpt.signInError).toBeUndefined();
   });
 });
