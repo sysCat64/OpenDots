@@ -197,6 +197,10 @@ If the server is killed during first-time key creation, the next start recovers:
 
 Linux (libsecret) is not implemented. When added it must require a persistent Secret Service and never use the kernel keyring as a fallback.
 
+## Phase 6 closeout
+
+What Phase 6 delivered, the real-account results, the 403/429 decision and the one open acceptance are recorded in [CHATGPT_PLAN_PHASE6.md](CHATGPT_PLAN_PHASE6.md).
+
 ## Not covered
 
 Resetting from the web UI, per-Dot models, Voice/Realtime, and scheduled-task research (`research.ts` still requires `OPENAI_API_KEY`).
