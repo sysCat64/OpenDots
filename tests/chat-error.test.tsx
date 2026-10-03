@@ -5,6 +5,8 @@ import {
   fromMessage,
   fromRunError,
   nextError,
+  noResponseError,
+  NO_RESPONSE_MESSAGE,
   USAGE_LIMIT_NOTICE,
   type ChatError,
 } from '../src/client/chat-error';
@@ -161,5 +163,60 @@ describe('nextError: state transitions', () => {
     expect(afterClear).toEqual({ message: SERVER_MESSAGE });
     expect(chatErrorView(afterClear).kind).toBe('generic');
     expect(nextError(null, limit)).toBe(limit);
+  });
+});
+
+describe('a run that resolves without an assistant message', () => {
+  // Over SSE a RUN_ERROR does not reject runAgent(). The chat sees, in order:
+  //   1. onRunErrorEvent          -> nextError(current, fromRunError(event))
+  //   2. copilotkit onError       -> nextError(current, fromMessage(message)), no code
+  //   3. runAgent() resolves empty -> noResponseError(current)
+  // and send() cleared the error (null) when the turn started.
+  function turn(runError: { message: string; code?: string } | null) {
+    let current: ChatError | null = null;
+    if (runError) {
+      current = nextError(current, fromRunError(runError));
+      current = nextError(current, fromMessage(runError.message));
+    }
+    return noResponseError(current);
+  }
+
+  it('keeps a coded RUN_ERROR over the synthetic no-response fallback', () => {
+    const shown = turn({ message: SERVER_MESSAGE, code: USAGE_LIMIT_CODE });
+    expect(shown).toEqual({ message: SERVER_MESSAGE, code: USAGE_LIMIT_CODE });
+    expect(shown.message).not.toBe(NO_RESPONSE_MESSAGE);
+    expect(chatErrorView(shown)).toMatchObject({
+      kind: 'usage_limit',
+      text: USAGE_LIMIT_NOTICE,
+    });
+  });
+
+  it('selects the usage-limit view from the code alone, never from the text', () => {
+    expect(
+      chatErrorView(turn({ message: 'unrelated text', code: USAGE_LIMIT_CODE }))
+        .kind,
+    ).toBe('usage_limit');
+    const impostor = turn({ message: USAGE_LIMIT_NOTICE });
+    expect(impostor.code).toBeUndefined();
+    expect(chatErrorView(impostor).kind).toBe('generic');
+    expect(chatErrorView(turn({ message: SERVER_MESSAGE })).kind).toBe(
+      'generic',
+    );
+  });
+
+  it('keeps an uncoded RUN_ERROR as its own message', () => {
+    const shown = turn({ message: 'Provider text.' });
+    expect(shown).toEqual({ message: 'Provider text.' });
+    expect(shown.message).not.toBe(NO_RESPONSE_MESSAGE);
+  });
+
+  it('is the generic no-response error only when no RUN_ERROR arrived', () => {
+    const shown = turn(null);
+    expect(shown).toEqual({ message: NO_RESPONSE_MESSAGE });
+    expect(shown).not.toHaveProperty('code');
+    expect(chatErrorView(shown)).toMatchObject({
+      kind: 'generic',
+      canReconnect: true,
+    });
   });
 });

@@ -35,6 +35,7 @@ import {
   fromMessage,
   fromRunError,
   nextError,
+  noResponseError,
   type ChatError,
 } from './chat-error';
 export function Chat({
@@ -155,10 +156,10 @@ export function Chat({
     setSourceOpen(false);
     try {
       const result = await copilotkit.runAgent({ agent });
-      if (!result.newMessages.some((message) => message.role === 'assistant'))
-        throw new Error(
-          'The current turn returned no response. Check the runtime connection and retry.',
-        );
+      if (!result.newMessages.some((message) => message.role === 'assistant')) {
+        setError(noResponseError);
+        return;
+      }
       onSaved();
     } catch (e) {
       setError((current) =>

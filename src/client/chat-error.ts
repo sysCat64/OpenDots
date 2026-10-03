@@ -3,9 +3,9 @@ import { CHATGPT_USAGE_URL, USAGE_LIMIT_CODE } from '../shared/run-errors';
 // What the chat shows when a run or a request fails. Pure, so each case can be
 // checked without a browser.
 //
-// `code` exists only when the AG-UI RUN_ERROR carried one. It may well be
-// missing (it is not known to survive every transport), so everything here
-// works from the message alone, and nothing reads a code out of a message.
+// `code` exists only when the AG-UI RUN_ERROR carried one and may be absent.
+// Generic error handling works without it; specialized views use the code
+// when present. No code is ever inferred from message text.
 
 export interface ChatError {
   message: string;
@@ -32,6 +32,22 @@ export function fromRunError(event: {
 }
 
 export const fromMessage = (message: string): ChatError => ({ message });
+
+// Shown only when a run resolves without an assistant message and nothing else
+// has been reported for it.
+export const NO_RESPONSE_MESSAGE =
+  'The current turn returned no response. Check the runtime connection and retry.';
+
+/**
+ * The error to show when a run resolved without an assistant message. Over SSE
+ * a RUN_ERROR does not reject `runAgent`; it is reported first and the run then
+ * resolves empty. `current` is what this run already reported (the chat clears
+ * it when a turn starts), so a real error, with its code, is the reason and
+ * keeps precedence. The synthetic message only fills the gap when nothing else
+ * was reported.
+ */
+export const noResponseError = (current: ChatError | null): ChatError =>
+  current ?? fromMessage(NO_RESPONSE_MESSAGE);
 
 const isUsageLimit = (error: ChatError | null) =>
   error?.code === USAGE_LIMIT_CODE;
