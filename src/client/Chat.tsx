@@ -30,6 +30,13 @@ import type { CallReceipt, Conversation, Dot } from '../shared/types';
 import { Mascot } from './Mascot';
 import { useVoice } from './useVoice';
 import { CallView } from './CallView';
+import { ChatErrorNotice } from './ChatErrorNotice';
+import {
+  fromMessage,
+  fromRunError,
+  nextError,
+  type ChatError,
+} from './chat-error';
 export function Chat({
   thread,
   dot,
@@ -89,7 +96,7 @@ export function Chat({
   const [draft, setDraft] = useState('');
   const [source, setSource] = useState('');
   const [sourceOpen, setSourceOpen] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<ChatError | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [running, setRunning] = useState(false);
   const voice = useVoice(thread.id, onSaved, agent.messages.at(-1)?.id);
@@ -97,10 +104,12 @@ export function Chat({
   const bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const subscription = copilotkit.subscribe({
-      onError: ({ error }) => setError(error.message),
+      onError: ({ error }) =>
+        setError((current) => nextError(current, fromMessage(error.message))),
     });
     const events = agent.subscribe({
-      onRunErrorEvent: ({ event }) => setError(event.message),
+      onRunErrorEvent: ({ event }) =>
+        setError((current) => nextError(current, fromRunError(event))),
     });
     return () => {
       subscription.unsubscribe();
@@ -117,8 +126,15 @@ export function Chat({
       })
       .catch((e) => {
         if (active)
-          setError(
-            e instanceof Error ? e.message : 'Conversation could not connect.',
+          setError((current) =>
+            nextError(
+              current,
+              fromMessage(
+                e instanceof Error
+                  ? e.message
+                  : 'Conversation could not connect.',
+              ),
+            ),
           );
       });
     return () => {
@@ -127,7 +143,7 @@ export function Chat({
   }, [agent, copilotkit, isReady]);
   const send = async (text: string) => {
     if (!text.trim() || running || !loaded || !contextReady || paused) return;
-    setError('');
+    setError(null);
     setRunning(true);
     agent.addMessage({
       id: crypto.randomUUID(),
@@ -145,10 +161,15 @@ export function Chat({
         );
       onSaved();
     } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message
-          : 'The turn failed. Your conversation remains saved.',
+      setError((current) =>
+        nextError(
+          current,
+          fromMessage(
+            e instanceof Error
+              ? e.message
+              : 'The turn failed. Your conversation remains saved.',
+          ),
+        ),
       );
     } finally {
       setRunning(false);
@@ -260,9 +281,11 @@ export function Chat({
                 location.hash = `/spaces/${page.spaceId}/pages/${page.id}`;
               } catch (e) {
                 setError(
-                  e instanceof Error
-                    ? e.message
-                    : 'Could not save conversation.',
+                  fromMessage(
+                    e instanceof Error
+                      ? e.message
+                      : 'Could not save conversation.',
+                  ),
                 );
               }
             }}
@@ -346,23 +369,23 @@ export function Chat({
           </button>
         </div>
       )}
-      {(error || voice.error) && (
-        <div className="chat-error" role="alert">
-          {error || voice.error}
-          {error && (
-            <button
-              onClick={() => {
-                setError('');
-                void copilotkit
-                  .connectAgent({ agent })
-                  .then(() => setLoaded(true))
-                  .catch((e) => setError(e.message));
-              }}
-            >
-              Reconnect
-            </button>
-          )}
-        </div>
+      {error ? (
+        <ChatErrorNotice
+          error={error}
+          onReconnect={() => {
+            setError(null);
+            void copilotkit
+              .connectAgent({ agent })
+              .then(() => setLoaded(true))
+              .catch((e) => setError(fromMessage(e.message)));
+          }}
+        />
+      ) : (
+        voice.error && (
+          <div className="chat-error" role="alert">
+            {voice.error}
+          </div>
+        )
       )}
       <CallView
         key={voice.status === 'idle' ? 'idle' : 'call'}

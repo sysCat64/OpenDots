@@ -8,3 +8,6 @@ export const USAGE_LIMIT_CODE = 'subscription_sharing_usage_limit_exceeded';
 export const FORWARDED_RUN_ERROR_CODES: ReadonlySet<string> = new Set([
   USAGE_LIMIT_CODE,
 ]);
+
+/** Where the owner reviews ChatGPT plan usage and app limits. */
+export const CHATGPT_USAGE_URL = 'https://chatgpt.com/settings/usage';
