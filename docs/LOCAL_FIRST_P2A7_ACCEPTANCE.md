@@ -8,6 +8,14 @@ Scope: `/private/tmp/opendots-p2a1.FV0LOx`. Nothing in main was changed by the e
 
 Question answered: is a `synchronous=FULL` SQLite durable runner practical for a personal-scale 100-turn conversation, which write policy should be the production candidate, and how large is the R27 durability window.
 
+## Measurement clarification (added after R32; the original measurements below are unchanged)
+
+The R32 investigation found that `@ag-ui/client` has a **development/test safety path**: when `NODE_ENV` is `test` or `development`, or `VITEST_WORKER_ID` is present, its event / subscriber processing **deep-clones and deep-freezes** the message and state tree (the check is made at call time; the package skips the safety path when messages plus state exceed 512 KB, which is recorded as observed package behavior only). The P2a-7 writer and reader child processes, and the in-process client, were spawned by a vitest worker and **inherited this environment**.
+
+Therefore the absolute timings of the **full message-cache derivation** reported below (about 1.0–1.15 s at turn 100, about 36–49 s cumulative, the client `connectAgent` figures and the event-loop figures of the same runs) represent the development/test safety path, **not a production-like absolute measurement**. A later R32 measurement with the variables removed (production-like) gave about **275–340 ms** for the same operation at turn 100. The quadratic shape and the finding that the cache rebuild, not SQLite, dominates are unchanged.
+
+**The W1 against W2 write-policy conclusion of this document remains valid**: both policies were measured in the same environment, alternating, and the comparison is relative. The original evidence is not replaced or deleted. See [`LOCAL_FIRST_R32_CACHE_ACCEPTANCE.md`](LOCAL_FIRST_R32_CACHE_ACCEPTANCE.md) section 12.
+
 ## 1. Baseline and environment
 
 - Scratch worktree detached at `aa2a415`; main HEAD = origin = `37213ba` (P2a-6 closeout, pushed first: local == origin, ahead 0 / behind 0, `?? mise.toml`).
@@ -48,9 +56,13 @@ Counts are exact: **W1 1,500 transactions** (1,400 events, one each, plus 100 me
 
 ## 6. Event-loop delay (writer)
 
+_Clarification: these figures were measured in the inherited development/test environment (see the clarification above)._
+
 `monitorEventLoopDelay`, resolution 10 ms (the reported values include about one timer interval even on an idle loop: min about 9 ms, p50 10–11.5 ms). All campaigns, both policies: mean 22–30 ms, p95 14–31 ms, **p99 about 510–820 ms, max 1.0–2.0 s**. The stalls are not SQLite writes: they coincide with the **message-cache rebuild** (section 7). A raw histogram dump and the "above the resolution floor" values are in `comparison.json`. Fake-provider waiting is not event-loop delay.
 
 ## 7. Where the time goes: the message-cache rebuild (key finding)
+
+_Clarification: the absolute timings in this section were measured in the inherited development/test environment; production-like, turn 100 is about 275–340 ms (see the clarification above and the R32 acceptance document). The "unexplained 4x gap" below was this environment._
 
 At the end of every run the runner re-derives the whole thread's messages with the public reducer (`rebuildMessages` → `deriveMessages`) and writes the cache. Measured in the writer per turn (campaign 1, W1 and W2 alike; campaign 7 shows the same): turn 1 about 1.2–1.6 ms, turn 10 about 17–19 ms, turn 50 about 270–290 ms, **turn 100 about 1.0–1.15 s**; per-run totals 36–49 s of a 70–94 s wall clock. The reducer step is CPU-bound (CPU time ≈ wall time, `derive_reduce_cpu`); reading and parsing the 1,400 rows is 1–3 ms. The cost grows faster than linearly with history. The client-observed turn time grows from about 330 ms (first ten turns) to 1.26–1.8 s (last ten): the run's stream completes only after the rebuild, and `RUN_FINISHED` itself is published earlier. Whether the real Chat would keep its running state about a second longer is an inference, not measured here.
 
@@ -159,7 +171,7 @@ N1 note: the mutation that only removes the flush just before the terminal event
 
 ## 17. Open issues
 
-1. **R32:** message-cache rebuild cost (section 7), and the unexplained 4× gap between the live writer and a fresh process.
+1. **R32:** message-cache rebuild cost (section 7), and the unexplained 4× gap between the live writer and a fresh process. _(The 4× gap was later explained by R32: the inherited development/test environment, see the clarification near the top.)_
 2. The real client's `connectAgent` of a 100-turn thread takes about 0.85–1.4 s in Node (not compared with the in-memory runner; not the runner's cost).
 3. **R27:** the durable lag exceeded the nominal 250 ms (observed maximum about 0.71 s); not exercised under SIGKILL again; quantified and avoided by the W1 recommendation, not formally closed.
 4. `fullfsync` / power-loss durability was not measured (process-crash and commit semantics only); single host, single stream.
