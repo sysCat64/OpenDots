@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { startTrap } from './helpers/telemetry-probe';
+import { startTrap } from './helpers/telemetry-trap';
 
 // This file deliberately imports CopilotKit itself, not through application
 // code, the way tests that build their own runtime do. Application modules

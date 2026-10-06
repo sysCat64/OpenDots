@@ -157,10 +157,11 @@ git clone https://github.com/CopilotKit/OpenDots.git
 cd OpenDots
 npm ci
 cp .env.example .env
+# Set OWNER_TOKEN in .env (24+ characters); the server will not start without it.
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173**. You can create Spaces, write pages, and configure Dots before connecting services. Add your conversation and model settings to `.env` to start chatting.
+Open **http://127.0.0.1:5173** and enter your `OWNER_TOKEN` when asked. You can create Spaces, write pages, and configure Dots before connecting services. Add your conversation and model settings to `.env` to start chatting.
 
 See [Setup](docs/SETUP.md) for configuration, Slack, calls, the browser service, and Docker.
 

@@ -26,7 +26,9 @@ export function validateRuntimeScope(
   // prefixes here would validate a different thread than the SDK dispatches.
   if (path === 'info' || path === 'threads') methods = ['GET'];
   else if (path === 'threads/subscribe') methods = ['POST'];
-  else if ((match = path.match(/^agent\/([^/]+)\/(run|connect|suggest)$/))) {
+  // `suggest` is deliberately absent: it runs an agent outside the normal run
+  // path, with no durable record, and nothing in OpenDots uses it.
+  else if ((match = path.match(/^agent\/([^/]+)\/(run|connect)$/))) {
     agentId = id(match[1]);
     threadId = typeof data.threadId === 'string' ? data.threadId : undefined;
     if (!threadId) return deny();

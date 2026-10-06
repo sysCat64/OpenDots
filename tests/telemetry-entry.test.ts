@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { readLines, repoRoot, runServerEntry } from './helpers/telemetry-probe';
+import { readLines, repoRoot } from './helpers/server-entry';
+import { runServerEntry } from './helpers/telemetry-probe';
 
 // CopilotKit latches its telemetry setting while its modules initialise, so
 // these tests start the real server entry (src/server/index.ts) in a fresh
@@ -18,8 +19,8 @@ describe('CopilotKit telemetry at server startup', () => {
     async () => {
       const result = await runServerEntry();
       expect(result.infoStatus).toBe(200);
-      // The run request got past owner scope and into the CopilotKit handler.
-      expect(result.runStatus).not.toBe(403);
+      // The run request got past owner auth and scope into the CopilotKit handler.
+      expect([401, 403]).not.toContain(result.runStatus);
       expect(result.events).toEqual([]);
       expect(result.output).not.toContain(DISCLOSURE);
       expect(result.blocked).toEqual([]);
@@ -37,7 +38,7 @@ describe('CopilotKit telemetry at server startup', () => {
         },
       });
       expect(result.infoStatus).toBe(200);
-      expect(result.runStatus).not.toBe(403);
+      expect([401, 403]).not.toContain(result.runStatus);
       expect(result.events).toEqual([]);
       expect(result.output).not.toContain(DISCLOSURE);
       expect(result.blocked).toEqual([]);

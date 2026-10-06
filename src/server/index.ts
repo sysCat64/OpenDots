@@ -1,5 +1,6 @@
 // Must stay the first import: see telemetry-guard.ts.
 import './telemetry-guard.js';
+import { requireOwnerToken } from './startup-config.js';
 import { createShutdown } from './shutdown.js';
 import { reportChannelFailure, safeFailure } from './slack-channel.js';
 import { serve } from '@hono/node-server';
@@ -12,16 +13,10 @@ import { Platform } from './platform.js';
 import type { PlatformConfig } from './platform-config.js';
 import { ModelService } from './model-service.js';
 import { createChatGPTPlanSession } from './chatgpt-devkit.js';
+// Before anything is opened or served: no usable owner token, no server.
+const ownerToken = requireOwnerToken(process.env.OWNER_TOKEN);
 const host = process.env.HOST ?? '127.0.0.1';
 const port = Number(process.env.PORT ?? 4310);
-const ownerToken = process.env.OWNER_TOKEN;
-if (
-  !['127.0.0.1', '::1', 'localhost'].includes(host) &&
-  (!ownerToken || ownerToken.length < 24)
-)
-  throw new Error(
-    'External binding requires an OWNER_TOKEN of at least 24 characters.',
-  );
 const database = process.env.DATABASE_PATH ?? 'data/opendots.sqlite';
 const store = new Store(database);
 const workspace = new WorkspaceStore(

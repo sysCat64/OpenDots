@@ -12,7 +12,9 @@ cp .env.example .env
 npm run dev
 ```
 
-Open http://127.0.0.1:5173. The API runs on port 4310. Without service credentials, the app shows its setup state; it does not generate simulated replies.
+Set `OWNER_TOKEN` in `.env` first: at least 24 characters, required on every binding including loopback. The server does not start without it. Generate one with `node -p "require('node:crypto').randomBytes(32).toString('hex')"`.
+
+Open http://127.0.0.1:5173 and enter the token when asked; the browser keeps it for that tab only. The API runs on port 4310. Without service credentials, the app shows its setup state; it does not generate simulated replies.
 
 For a built local app:
 
@@ -37,7 +39,7 @@ Edit `.env` on the server and restart after changes:
 | `CHATGPT_CREDENTIAL_STORE`, `CHATGPT_STATE_DIR`                  | Whether a ChatGPT sign-in survives restarts (macOS Keychain)                                    |
 | `OWNER_ID`                                                       | Stable identity used for this deployment's conversations                                        |
 | `DATABASE_PATH`                                                  | SQLite file containing pages, workspace and work metadata                                       |
-| `OWNER_TOKEN`                                                    | Application access token; required for external bindings                                        |
+| `OWNER_TOKEN`                                                    | Application access token; required on every binding, 24+ characters                             |
 | `APP_ORIGIN`                                                     | Exact browser origin when using a proxy or custom domain                                        |
 
 The model environment variable names follow the configured provider adapter. Provider credentials belong in `.env`, not client-side variables or source code. Conversation history lives in the configured Intelligence project; copying the SQLite file alone does not back up that history.
