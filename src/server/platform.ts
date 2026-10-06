@@ -1,3 +1,5 @@
+// Must stay the first import: see telemetry-guard.ts.
+import './telemetry-guard.js';
 import { ComputerService } from './computer-service.js';
 import { PageService } from './page-service.js';
 import { randomUUID } from 'node:crypto';

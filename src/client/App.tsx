@@ -926,7 +926,12 @@ export function App() {
     </div>
   );
   return configured ? (
-    <CopilotKitProvider runtimeUrl="/api/copilotkit" headers={authHeaders()}>
+    // In development the SDK mounts an inspector that sends its own telemetry.
+    <CopilotKitProvider
+      runtimeUrl="/api/copilotkit"
+      headers={authHeaders()}
+      enableInspector={false}
+    >
       {content}
     </CopilotKitProvider>
   ) : (

@@ -1,3 +1,5 @@
+// Must stay the first import: see telemetry-guard.ts.
+import './telemetry-guard.js';
 import { defineTool } from '@copilotkit/runtime/v2';
 import { z } from 'zod';
 import type { WorkspaceStore } from './workspace.js';

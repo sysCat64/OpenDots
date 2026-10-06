@@ -1,3 +1,5 @@
+// Must stay the first import: see telemetry-guard.ts.
+import './telemetry-guard.js';
 import { createShutdown } from './shutdown.js';
 import { reportChannelFailure, safeFailure } from './slack-channel.js';
 import { serve } from '@hono/node-server';

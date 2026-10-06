@@ -1,3 +1,5 @@
+// Must stay the first import: see telemetry-guard.ts.
+import './telemetry-guard.js';
 import { pageReviewTool } from '../shared/page-review.js';
 import { ComputerService } from './computer-service.js';
 import { computerTools } from './computer-tools.js';

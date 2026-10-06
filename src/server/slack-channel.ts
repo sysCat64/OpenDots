@@ -1,3 +1,5 @@
+// Must stay the first import: see telemetry-guard.ts.
+import './telemetry-guard.js';
 import {
   createChannel,
   type ChannelIdentityContext,

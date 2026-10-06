@@ -1,3 +1,5 @@
+// Must stay the first import: see telemetry-guard.ts.
+import './telemetry-guard.js';
 import { IntelligenceAgent } from '@copilotkit/core';
 import type { Message } from '@ag-ui/core';
 import { randomUUID } from 'node:crypto';
