@@ -38,7 +38,7 @@ export function apiKeyProvider(config: ApiKeyModelConfig): ModelProvider {
     modelOptions: { max_completion_tokens: 2200 },
     createAdapter() {
       if (!apiKey || !model)
-        throw new Error('Intelligence and model configuration are required.');
+        throw new Error('Model configuration is required.');
       return openaiCompatibleText(model, {
         apiKey,
         baseURL: config.baseUrl ?? 'https://api.openai.com/v1',

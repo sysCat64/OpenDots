@@ -26,6 +26,22 @@ export function readSources(repoRoot: string, directory: string): Sources {
 // Reading the emitted JavaScript models import elision: `import type` and
 // imports used only as types load nothing at run time.
 export function emittedImports(path: string, source: string) {
+  // Evaluating every module as a root revisits the same files many times; the
+  // result depends only on the path and the text, so each is transpiled once.
+  const key = `${path}\0${source}`;
+  const known = emittedImportsCache.get(key);
+  if (known) return known;
+  const result = readEmittedImports(path, source);
+  emittedImportsCache.set(key, result);
+  return result;
+}
+
+const emittedImportsCache = new Map<
+  string,
+  { staticImports: string[]; dynamicImports: string[] }
+>();
+
+function readEmittedImports(path: string, source: string) {
   const { outputText } = ts.transpileModule(source, {
     fileName: path,
     compilerOptions: {

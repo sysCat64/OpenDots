@@ -87,8 +87,7 @@ export function chatgptPlanProvider(config: ChatGPTPlanConfig): ModelProvider {
     // model's next tool turn has nothing to replay.
     modelOptions: { store: false, include: ['reasoning.encrypted_content'] },
     createAdapter() {
-      if (!auth || !model)
-        throw new Error('Intelligence and model configuration are required.');
+      if (!auth || !model) throw new Error('Model configuration is required.');
       const authorizedFetch: typeof fetch = async (input, init) => {
         try {
           await assertModelAvailable(auth, model);

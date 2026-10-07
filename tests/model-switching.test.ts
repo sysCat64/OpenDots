@@ -194,7 +194,7 @@ it('never substitutes another model: a saved model that is gone stops the run', 
   expect(events).toEqual([
     expect.objectContaining({
       type: EventType.RUN_ERROR,
-      message: expect.stringMatching(/configuration are required/),
+      message: expect.stringMatching(/configuration is required/),
     }),
   ]);
   expect(network).not.toHaveBeenCalled();

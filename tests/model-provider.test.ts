@@ -16,7 +16,7 @@ it('keeps the API-key provider on the existing limits and fails closed when unco
   });
   const empty = apiKeyProvider({});
   expect(empty.configured).toBe(false);
-  expect(() => empty.createAdapter()).toThrow(/configuration are required/);
+  expect(() => empty.createAdapter()).toThrow(/configuration is required/);
 });
 
 it('reports the legacy missing variables for an unconfigured API-key provider', () => {
