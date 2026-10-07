@@ -233,19 +233,21 @@ Do not silently fail.
 
 ## 4. Implementation readiness
 
-"GO" means cleared to start when the owner instructs it, subject to the per-commit acceptance levels in design §17.2. **No commit in C1 to C9 has been started.**
+"GO" means cleared to start when the owner instructs it, subject to the per-commit acceptance levels in design §17.2. "PASS / integrated" means the commit passed the owner's review and is pushed on `feat/chatgpt-plan-provider`. C1, C2 and C3 are integrated; **C4 is next and has not been started**, and no later commit has been started.
 
-| Commit | State                     | Basis                                                                                                                                |
-| ------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| C1     | **GO**                    | DEC-1 and the vitest setup file in DEC-12 are decided.                                                                               |
-| C2     | **GO**                    | DEC-2 and DEC-17 are decided.                                                                                                        |
-| C3     | **GO**                    | No open decision.                                                                                                                    |
-| C4     | **GO**                    | DEC-4, DEC-5, DEC-6, DEC-9, DEC-12 and DEC-16 are decided. Dormant code; DEC-10 does not block it.                                   |
-| C5     | **GO**                    | DEC-14 is decided. Dormant code; DEC-10 does not block it.                                                                           |
-| C6     | **HOLD**                  | DEC-3 requires the recurring-task busy/scheduling semantics to be redesigned and tested before activation. See the open items below. |
-| C7     | Sequenced after C6        | As designed.                                                                                                                         |
-| C8     | Sequenced after C6        | As designed.                                                                                                                         |
-| C9     | Sequenced after C6 and C7 | As designed. C9b has its dependency approval (DEC-11), conditional on the reachability gates.                                        |
+| Commit | State                             | Basis                                                                                                                                                                              |
+| ------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1     | **PASS / integrated** (`b325d66`) | DEC-1 and the vitest setup file in DEC-12 are decided.                                                                                                                             |
+| C2     | **PASS / integrated** (`5f04507`) | DEC-2 and DEC-17 are decided.                                                                                                                                                      |
+| C3     | **PASS / integrated** (`b83ce70`) | No open decision.                                                                                                                                                                  |
+| C4     | **GO** (next)                     | DEC-4, DEC-5, DEC-6, DEC-9, DEC-12 and DEC-16 are decided. Dormant code; DEC-10 does not block it. The exact landing boundary is reviewed before any durable-runner code is added. |
+| C5     | **GO**                            | DEC-14 is decided. Dormant code; DEC-10 does not block it.                                                                                                                         |
+| C6     | **HOLD**                          | DEC-3 requires the recurring-task busy/scheduling semantics to be redesigned and tested before activation. See the open items below.                                               |
+| C7     | Sequenced after C6                | As designed.                                                                                                                                                                       |
+| C8     | Sequenced after C6                | As designed.                                                                                                                                                                       |
+| C9     | Sequenced after C6 and C7         | As designed. C9b has its dependency approval (DEC-11), conditional on the reachability gates.                                                                                      |
+
+The "Note (verified)" lines in section 3 describe the source as it was when this record was written (`9413f12`). For example, `suggest` was still in the scope allowlist then; C2 removed it.
 
 DEC-10 blocks **shipping**, not the creation of dormant C4/C5 code. **Shipping remains HOLD**, with the design's before-shipping risks (§18.2) still open, DEC-10's mechanism and implementation, and DEC-15's A/B choice.
 
@@ -263,7 +265,7 @@ The design's other C6 conditions are unchanged: the full acceptance ladder, the 
 
 ## 5. `maxIterations`
 
-**No production `maxIterations` semantic change is approved.** Preserve the current production behaviour (`src/server/dot-agent.ts:230`: `maxIterations(dot.skillDeliveryEnabled && conversation.learningContainerId ? 10 : 5)`) until the later cleanup makes the learning path unreachable. Do **not** carry the P5 fixed-5 test candidate into C3 or C4.
+**No production `maxIterations` semantic change is approved.** Preserve the current production behaviour (`src/server/dot-agent.ts`: `maxIterations(dot.skillDeliveryEnabled && conversation.learningContainerId ? 10 : 5)`) until the later cleanup makes the learning path unreachable. Do **not** carry the P5 fixed-5 test candidate into C3 or C4.
 
 The design's proposal to collapse the expression to the constant 5 at C9b (§8) stays a proposal. DEC-11 does not approve it.
 
@@ -272,4 +274,50 @@ The design's proposal to collapse the expression to the constant 5 at C9b (§8) 
 - The design document and commit `9413f12` are unchanged by this record.
 - This record changes no `src/`, `tests/`, `package.json` or lockfile.
 - P2a-9 and P2b-1 remain HOLD.
-- The four prunable `/private/tmp` worktrees (§19.1) are **not** pruned. They may be pruned after the design checkpoint and this record have both been reviewed and pushed.
+- The four prunable `/private/tmp` worktrees (§19.1) were pruned on 2026-10-07, after the design checkpoint and this record had both been reviewed and pushed.
+
+## 7. Deferred hardening items
+
+**These are not decisions.** They carry no DEC numbers, none has been approved or rejected, and none blocks C4. They record questions raised while reviewing C1 to C3 so they are not lost. The behaviour described under "Current" is today's compatibility behaviour; it is **not an approval** of that behaviour for shipping. Nothing here changes DEC-1 to DEC-17: **DEC-2 remains exactly** "`OWNER_TOKEN` required, minimum 24 characters, no loopback or development opt-out". An item becomes a decision only if the owner explicitly decides it and it is given a DEC number. If this section and DEC-1 to DEC-17 could be read to conflict, DEC-1 to DEC-17 govern.
+
+### H1: `OWNER_TOKEN` versus `BROWSER_SECRET`
+
+**Question.** Should shipping configuration refuse to start when `OWNER_TOKEN === BROWSER_SECRET`? Separate trust domains may be better served by separate secrets.
+
+**Current (verified).** Nothing in `src` compares the two. `docs/SETUP.md` tells the owner to use different secrets for the browser service, so the difference is documented, not enforced.
+
+**Status: OPEN.** Not a blocker for C1 to C4.
+
+### H2: `OWNER_TOKEN` whitespace and strength policy
+
+**Question.** Beyond a length of at least 24, should the policy require non-whitespace content (after trimming), a minimum entropy, a generated-token format, or another explicit strength rule?
+
+**Current (verified).** `requireOwnerToken` (`src/server/startup-config.ts`) checks only that the value is present and at least 24 characters long, so 24 whitespace characters satisfy it. Node's `fetch` strips trailing whitespace from header values (checked against a local server), so a token that ends in whitespace, or is only whitespace, can pass startup and still not be presentable by a standard HTTP client.
+
+**Status: OPEN.** The accepted DEC-2 contract is not changed by this item.
+
+### H3: Authorization syntax
+
+**Question.** Should shipping require strict `Authorization: Bearer <token>` and stop accepting a bare token?
+
+**Current (verified).** The `/api/*` middleware (`src/server/app.ts`) removes a leading `Bearer ` if there is one and compares the rest, so both `Bearer <token>` and a bare `<token>` are accepted. The browser service (`src/browser/index.ts`) parses its own secret the same way.
+
+**Before any change, inventory every caller.** The senders of the owner token known in this repository are the browser client (`src/client/api.ts`: `api()` and `authHeaders()`, which the CopilotKit provider and the voice code reuse) and the server's self-call in `Platform.turn` (`src/server/platform.ts`); all of them send `Bearer`. This is not an exhaustive inventory: scripts and local automation outside the repository are unknown (design §6.3).
+
+**Status: OPEN.**
+
+### H4: Startup configuration centralisation
+
+**Question.** Should the existing `MODEL_PROVIDER` and `CHATGPT_CREDENTIAL_STORE` validations move into the application-owned startup-config seam (`src/server/startup-config.ts`)?
+
+**Current (verified).** Both are validated inline in `src/server/index.ts`. Design §6.4 proposed moving them; the C2 contract did not include it. This is a maintainability and configuration-centralisation question, not part of C2 authorization correctness.
+
+**Status: OPEN.**
+
+### H5: `DO_NOT_TRACK` process inheritance
+
+**Question.** If OpenDots ever launches a child process whose own do-not-track policy must differ, the inherited setting needs a compatibility review.
+
+**Current (verified).** C1 (`src/server/telemetry-guard.ts`) sets `DO_NOT_TRACK=1` in the server process, so child processes inherit it. This was accepted for C1. Today `src` imports no `child_process` and no deployment file sets the variable, so there is nothing to review yet.
+
+**Status: OPEN.** Non-blocking.
