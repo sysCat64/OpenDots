@@ -15,6 +15,7 @@
     "browser:start": "node --env-file-if-exists=.env dist/server/browser/index.js",
     "chatgpt-plan": "node --env-file-if-exists=.env --import tsx src/server/chatgpt-plan-cli.ts",
     "test": "vitest run",
+    "test:crash": "vitest run --config vitest.crash.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests vite.config.ts",
     "format": "prettier --write src tests *.json *.ts *.js index.html public .github Dockerfile \"compose*.yml\" deployment README.md docs .env.example --ignore-unknown",

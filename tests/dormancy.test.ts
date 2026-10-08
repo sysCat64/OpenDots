@@ -9,13 +9,14 @@ import {
 } from './helpers/evaluation-order';
 
 // DORM-1 (docs/LOCAL_FIRST_C4_LANDING_BOUNDARY.md, section 19, layer D1). The
-// conversation log and the run rules are dormant: nothing the application
+// conversation log, the run rules and the durable runner are dormant: nothing the application
 // starts can load them, so nothing can construct a log or create a table.
 // This is the static half; tests/dormancy-runtime.test.ts watches a real server.
 const root = fileURLToPath(new URL('../', import.meta.url));
 const LOG = 'src/server/conversation-log.ts';
 const RULES = 'src/server/run-rules.ts';
-const DORMANT = [LOG, RULES];
+const RUNNER = 'src/server/durable-runner.ts';
+const DORMANT = [LOG, RULES, RUNNER];
 
 // Every way the application starts: the server, the ChatGPT plan CLI, the
 // browser worker and the web client (index.html loads src/client/main.tsx).
@@ -30,11 +31,14 @@ const ROOTS = [
 const reachable = (entry: string, sources: Sources) =>
   new Set(evaluationOrder(entry, sources));
 
-// Files whose emitted imports (static or dynamic) name the target module.
+// Files whose emitted imports (static or dynamic) name the target module. The
+// dormant modules may import one another (the runner uses the log and the rules);
+// what must not exist is an importer outside them.
 function importers(target: string, sources: Sources): string[] {
   const stem = target.replace(/^src\/server\//, '').replace(/\.ts$/, '');
   return Object.entries(sources)
     .filter(([path, text]) => {
+      if (DORMANT.includes(path)) return false;
       const { staticImports, dynamicImports } = emittedImports(path, text);
       return [...staticImports, ...dynamicImports].some(
         (specifier) =>
@@ -69,7 +73,7 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
     },
   );
 
-  it('no file under src imports either module (in-degree 0), statically or dynamically', () => {
+  it('no file under src outside them imports any of them (in-degree 0), statically or dynamically', () => {
     for (const dormant of DORMANT)
       expect(importers(dormant, sources), dormant).toEqual([]);
   });
@@ -89,7 +93,9 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
   it('no dynamic import or require names either module', () => {
     for (const [path, text] of Object.entries(sources)) {
       if (DORMANT.includes(path)) continue;
-      expect(text, path).not.toMatch(/conversation-log|run-rules/);
+      expect(text, path).not.toMatch(
+        /conversation-log|run-rules|durable-runner/,
+      );
     }
   });
 
@@ -101,12 +107,23 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
         );
   });
 
-  it('ensureSchema is mentioned by no source file but the log itself', () => {
+  it('ensureSchema is mentioned by no source file but the log and, once, the runner', () => {
     for (const [path, text] of Object.entries(sources))
-      if (path !== LOG) expect(text, path).not.toMatch(/ensureSchema/);
-    // And the log's own constructor never calls it.
+      if (path !== LOG && path !== RUNNER)
+        expect(text, path).not.toMatch(/ensureSchema/);
     expect(readFileSync(`${root}${LOG}`, 'utf8')).toMatch(
       /ensureSchema\(\): void/,
+    );
+    // The runner, which only exists where someone constructs it on purpose,
+    // creates the schema in exactly one place: its explicit initialization.
+    const runner = sources[RUNNER];
+    expect(runner.match(/ensureSchema/g)).toHaveLength(1);
+    expect(runner).toMatch(
+      /private initializeStorage\(\): void \{[^}]*this\.log\.ensureSchema\(\)/s,
+    );
+    // And neither constructor creates a table.
+    expect(runner).not.toMatch(
+      /constructor\([^)]*\)[^{]*\{[^}]*initializeStorage/s,
     );
   });
 
@@ -119,6 +136,11 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
       );
     expect(local(LOG)).toEqual([]);
     expect(local(RULES)).toEqual(['./telemetry-guard.js']);
+    expect(local(RUNNER).sort()).toEqual([
+      './conversation-log.js',
+      './run-rules.js',
+      './telemetry-guard.js',
+    ]);
     // No file under src exists for test purposes only.
     expect(
       Object.keys(sources).filter((p) => /test|fixture|helper|mock/i.test(p)),
@@ -132,6 +154,7 @@ describe('the detector can fail (negative controls)', () => {
     'src/server/app.ts': 'export const app = 1;\n',
     'src/server/conversation-log.ts': 'export const log = 1;\n',
     'src/server/run-rules.ts': 'export const rules = 1;\n',
+    'src/server/durable-runner.ts': 'export const runner = 1;\n',
     ...overrides,
   });
 
@@ -149,6 +172,15 @@ describe('the detector can fail (negative controls)', () => {
         "import { rules } from './run-rules.js';\nexport const app = rules;\n",
     });
     expect(reachable('src/server/index.ts', sources).has(RULES)).toBe(true);
+  });
+
+  it('flags a production module that imports the runner', () => {
+    const sources = synthetic({
+      'src/server/app.ts':
+        "import { runner } from './durable-runner.js';\nexport const app = runner;\n",
+    });
+    expect(reachable('src/server/index.ts', sources).has(RUNNER)).toBe(true);
+    expect(importers(RUNNER, sources)).toEqual(['src/server/app.ts']);
   });
 
   it('flags a dynamic import', () => {

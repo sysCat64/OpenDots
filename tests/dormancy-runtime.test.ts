@@ -63,6 +63,7 @@ describe('the trace itself can see a dormant module (positive control)', () => {
   it.each([
     ['conversation-log', './src/server/conversation-log.ts'],
     ['run-rules', './src/server/run-rules.ts'],
+    ['durable-runner', './src/server/durable-runner.ts'],
   ])(
     'reports %s when a process really loads it',
     (name, path) => {
