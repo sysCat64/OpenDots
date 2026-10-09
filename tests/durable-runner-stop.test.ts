@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { UNKNOWN_OUTCOME_CONTENT } from '../src/server/run-rules';
 import { SERVER_TOOL, user } from './helpers/event-fixtures';
 import {
   collect,
@@ -126,7 +127,7 @@ describe('stopping an ordinary streaming text run', () => {
 });
 
 describe('stopping during an in-flight tool', () => {
-  it('closes the call with a stopped result and finishes the run', async () => {
+  it('closes the unresolved server call with the unknown outcome (never a stock stopped result) and finishes the run as stopped', async () => {
     const h = make();
     const agent = new ScriptedAgent(() => [
       ...textMessage('a1', 'looking'),
@@ -150,7 +151,9 @@ describe('stopping during an in-flight tool', () => {
     ) as unknown as {
       content: string;
     };
-    expect(JSON.parse(result.content)).toMatchObject({ status: 'stopped' });
+    // A stop never proves that a server tool did not run: the call is closed with
+    // the same unknown-outcome result recovery writes, and the run is `stopped`.
+    expect(result.content).toBe(UNKNOWN_OUTCOME_CONTENT);
     expect(h.log.getRun('t1', 'r1')?.status).toBe('stopped');
   });
 });

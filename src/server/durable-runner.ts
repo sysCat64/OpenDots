@@ -474,11 +474,15 @@ export class DurableAgentRunner extends AgentRunner {
     state.subject.next(state.persistedStart);
   }
 
-  // A failure can end a run after a server executor was entered and before its
-  // result was recorded (a failed write of the result, a dropped stream). The
-  // stock finalizer closes such a call with an "error" result, which reads as "it
-  // did not run". The tool may have run, so the call gets the same unknown-outcome
-  // result recovery writes (run-rules.ts), and nothing retries it.
+  // A failure or a stop can end a run after a server executor was entered and
+  // before its result was recorded (a failed write of the result, a dropped
+  // stream, a stop while the executor ran). The stock finalizer closes such a call
+  // with an "error" or "stopped" result, which reads as "it did not run". The tool
+  // may have run, so the call gets the same unknown-outcome result recovery writes
+  // (run-rules.ts), and nothing retries it. Only ended, unresolved, non-client
+  // calls are listed as pending: an already durable result, a client (HITL) call
+  // and a call whose arguments were still streaming (the fence guarantees its
+  // executor cannot have run) keep what they have.
   private keepUnknownOutcome(
     events: readonly BaseEvent[],
     closers: BaseEvent[],
@@ -526,8 +530,12 @@ export class DurableAgentRunner extends AgentRunner {
           ? { interruptionMessage: interruption }
           : {}),
       });
+      // A failure or a user stop can end a run while a server executor may have
+      // run: the stop is a flag, an executor already entered runs to completion
+      // and its result is not recorded. Run status (`stopped`) and tool outcome
+      // are independent, so the call is recorded as unknown, never as "stopped".
       const appended =
-        interruption !== undefined
+        interruption !== undefined || state.stopRequested
           ? this.keepUnknownOutcome(state.events, closers)
           : closers;
       if (appended.length) {
