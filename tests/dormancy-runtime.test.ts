@@ -1,8 +1,14 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Store } from '../src/server/store';
@@ -22,7 +28,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const TRACE = fileURLToPath(
   new URL('./fixtures/dormancy/module-trace.mjs', import.meta.url),
 );
-const DORMANT = /conversation-log|run-rules|durable-runner/;
+const DORMANT = /conversation-log|run-rules|durable-runner|headless-local/;
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -64,6 +70,7 @@ describe('the trace itself can see a dormant module (positive control)', () => {
     ['conversation-log', './src/server/conversation-log.ts'],
     ['run-rules', './src/server/run-rules.ts'],
     ['durable-runner', './src/server/durable-runner.ts'],
+    ['headless-local', './src/server/headless-local.ts'],
   ])(
     'reports %s when a process really loads it',
     (name, path) => {
@@ -93,6 +100,99 @@ describe('the trace itself can see a dormant module (positive control)', () => {
     },
     60_000,
   );
+});
+
+// D7/D8 (docs/LOCAL_FIRST_C5_LANDING_BOUNDARY.md). The adapter can be loaded on
+// purpose, and doing so is inert: it pulls in the existing currentTurnText
+// (headless.ts, which imports the CopilotKit client) but opens no socket, no
+// database and no file, starts no runtime, registers no process handler and
+// replaces no global. The one process-wide effect is the telemetry guard that
+// every server module already applies.
+describe('importing the headless adapter on purpose has no side effect (D7, D8)', () => {
+  it('loads exactly its own dependencies and does nothing else', () => {
+    const log = traceFile();
+    const home = mkdtempSync(
+      join(realpathSync(tmpdir()), 'opendots-c5-import-'),
+    );
+    cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+    const script = `
+        import net from 'node:net';
+        let sockets = 0;
+        const connect = net.Socket.prototype.connect;
+        net.Socket.prototype.connect = function (...args) { sockets += 1; return connect.apply(this, args); };
+        const events = ['exit', 'beforeExit', 'SIGINT', 'SIGTERM', 'uncaughtException', 'unhandledRejection', 'warning'];
+        const count = () => Object.fromEntries(events.map((e) => [e, process.listenerCount(e)]));
+        const env = { ...process.env };
+        const fetchBefore = globalThis.fetch;
+        const listenersBefore = count();
+        const mod = await import(${JSON.stringify(join(root, 'src/server/headless-local.ts'))});
+        const changed = Object.keys(process.env).filter((k) => process.env[k] !== env[k]).sort();
+        console.log('RESULT ' + JSON.stringify({
+          exports: Object.keys(mod).sort(),
+          sockets,
+          changedEnv: changed,
+          listenersChanged: JSON.stringify(count()) !== JSON.stringify(listenersBefore),
+          fetchReplaced: globalThis.fetch !== fetchBefore,
+        }));
+      `;
+    const result = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', '--input-type=module', '--eval', script],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 60_000,
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: home,
+          TMPDIR: home,
+          NODE_OPTIONS: `--import ${TRACE}`,
+          OPENDOTS_MODULE_TRACE_LOG: log,
+        },
+      },
+    );
+    // It ended on its own: nothing kept the process alive (no server, timer
+    // or open handle).
+    expect(result.signal).toBeNull();
+    expect(result.status, result.stderr).toBe(0);
+    const line = result.stdout.split('\n').find((l) => l.startsWith('RESULT '));
+    const observed = JSON.parse(line!.slice('RESULT '.length));
+    expect(observed.exports).toEqual([
+      'DEFAULT_ABORT_GRACE_MS',
+      'HeadlessTurnError',
+      'ThreadBusyError',
+      'runLocalTurn',
+    ]);
+    expect(observed.sockets).toBe(0);
+    expect(observed.listenersChanged).toBe(false);
+    expect(observed.fetchReplaced).toBe(false);
+    // Only the telemetry guard's protective assignments.
+    expect(observed.changedEnv).toEqual([
+      'COPILOTKIT_TELEMETRY_DISABLED',
+      'DO_NOT_TRACK',
+    ]);
+    // The application modules it loaded: the adapter, the runner with its log
+    // and rules, the guard, headless.ts (for currentTurnText) and the shared
+    // voice prefix. No store, workspace, platform, app, voice, scheduler or
+    // entry point, so no database is opened and no table can be created.
+    const own = `${pathToFileURL(join(root, 'src')).href}/`;
+    const modules = loaded(log)
+      .filter((url) => url.startsWith(own))
+      .map((url) => url.slice(own.length))
+      .sort();
+    expect([...new Set(modules)]).toEqual([
+      'server/conversation-log.ts',
+      'server/durable-runner.ts',
+      'server/headless-local.ts',
+      'server/headless.ts',
+      'server/run-rules.ts',
+      'server/telemetry-guard.ts',
+      'shared/voice-receipt.ts',
+    ]);
+    // Nothing was written anywhere it could have been (its HOME and TMPDIR),
+    // apart from the tsx loader's own cache directory.
+    expect(readdirSync(home).filter((name) => !/^tsx-/.test(name))).toEqual([]);
+  }, 90_000);
 });
 
 describe('a real server on a disposable database', () => {

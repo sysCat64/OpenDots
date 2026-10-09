@@ -9,14 +9,17 @@ import {
 } from './helpers/evaluation-order';
 
 // DORM-1 (docs/LOCAL_FIRST_C4_LANDING_BOUNDARY.md, section 19, layer D1). The
-// conversation log, the run rules and the durable runner are dormant: nothing the application
-// starts can load them, so nothing can construct a log or create a table.
+// conversation log, the run rules, the durable runner and (C5, section 11 of
+// docs/LOCAL_FIRST_C5_LANDING_BOUNDARY.md) the local headless adapter are
+// dormant: nothing the application starts can load them, so nothing can
+// construct a log or create a table.
 // This is the static half; tests/dormancy-runtime.test.ts watches a real server.
 const root = fileURLToPath(new URL('../', import.meta.url));
 const LOG = 'src/server/conversation-log.ts';
 const RULES = 'src/server/run-rules.ts';
 const RUNNER = 'src/server/durable-runner.ts';
-const DORMANT = [LOG, RULES, RUNNER];
+const HEADLESS_LOCAL = 'src/server/headless-local.ts';
+const DORMANT = [LOG, RULES, RUNNER, HEADLESS_LOCAL];
 
 // Every way the application starts: the server, the ChatGPT plan CLI, the
 // browser worker and the web client (index.html loads src/client/main.tsx).
@@ -94,7 +97,7 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
     for (const [path, text] of Object.entries(sources)) {
       if (DORMANT.includes(path)) continue;
       expect(text, path).not.toMatch(
-        /conversation-log|run-rules|durable-runner/,
+        /conversation-log|run-rules|durable-runner|headless-local/,
       );
     }
   });
@@ -141,6 +144,15 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
       './run-rules.js',
       './telemetry-guard.js',
     ]);
+    // The C5 adapter's only application dependencies: the runner, the existing
+    // currentTurnText (headless.ts, which loads the guard first itself), the
+    // voice receipt prefix and the guard. It touches no store, platform or Dot.
+    expect(local(HEADLESS_LOCAL).sort()).toEqual([
+      '../shared/voice-receipt.js',
+      './durable-runner.js',
+      './headless.js',
+      './telemetry-guard.js',
+    ]);
     // No file under src exists for test purposes only.
     expect(
       Object.keys(sources).filter((p) => /test|fixture|helper|mock/i.test(p)),
@@ -155,6 +167,7 @@ describe('the detector can fail (negative controls)', () => {
     'src/server/conversation-log.ts': 'export const log = 1;\n',
     'src/server/run-rules.ts': 'export const rules = 1;\n',
     'src/server/durable-runner.ts': 'export const runner = 1;\n',
+    'src/server/headless-local.ts': 'export const local = 1;\n',
     ...overrides,
   });
 
@@ -181,6 +194,24 @@ describe('the detector can fail (negative controls)', () => {
     });
     expect(reachable('src/server/index.ts', sources).has(RUNNER)).toBe(true);
     expect(importers(RUNNER, sources)).toEqual(['src/server/app.ts']);
+  });
+
+  it('flags a production module that imports the headless adapter', () => {
+    const sources = synthetic({
+      'src/server/app.ts':
+        "import { local } from './headless-local.js';\nexport const app = local;\n",
+    });
+    expect(reachable('src/server/index.ts', sources).has(HEADLESS_LOCAL)).toBe(
+      true,
+    );
+    expect(importers(HEADLESS_LOCAL, sources)).toEqual(['src/server/app.ts']);
+  });
+
+  it('flags the production root importing the headless adapter directly', () => {
+    const sources = synthetic({
+      'src/server/index.ts': "import './headless-local.js';\n",
+    });
+    expect(importers(HEADLESS_LOCAL, sources)).toEqual(['src/server/index.ts']);
   });
 
   it('flags a dynamic import', () => {
