@@ -9,9 +9,14 @@ import {
   type AgentRunnerStopRequest,
   type LocalThreadEndpointRecord,
 } from '@copilotkit/runtime/v2';
-import { compactEvents, type AbstractAgent } from '@ag-ui/client';
-import type { BaseEvent, Message } from '@ag-ui/core';
-import { Observable, ReplaySubject } from 'rxjs';
+import {
+  Middleware,
+  compactEvents,
+  verifyEvents,
+  type AbstractAgent,
+} from '@ag-ui/client';
+import type { BaseEvent, Message, RunAgentInput } from '@ag-ui/core';
+import { Observable, ReplaySubject, tap, throwError } from 'rxjs';
 import {
   ConversationLog,
   DuplicateRunError,
@@ -20,6 +25,7 @@ import {
   type TerminalStatus,
 } from './conversation-log.js';
 import {
+  UNKNOWN_OUTCOME_CONTENT,
   classifyRun,
   findStaleToolHistory,
   recoveryEvents,
@@ -42,13 +48,36 @@ import {
 // is process-local; a second process on the same file is not recognised, and its
 // ready() would wrongly recover this process's live run. No multi-process safety
 // is claimed.
+//
+// The execution fence (A1). A server tool executor must never begin before the
+// tool call's START, ARGS and END events are committed. A subscriber callback
+// (the AG-UI onEvent) cannot give that: it runs after asynchronous stages, and
+// the producer runs the executor right after it pushes TOOL_CALL_END. So each
+// run installs one synchronous rxjs operator, DurableFenceTap, through the
+// public agent.use() as the only and therefore innermost middleware, directly
+// on the producer's output. It appends and commits each event inside the
+// producer's own push, publishes it, and on a write failure aborts the producer
+// and errors the stream before the producer can go on. runAgent stays the
+// execution path, so nothing is bypassed.
+//
+// Safety assumptions that tie this to the pinned SDK (@ag-ui/client 0.0.59,
+// @copilotkit/runtime 1.75.0), all enforced at run time and fail closed:
+//  - runAgent composes middlewares with reduceRight, so the last one added is
+//    the innermost. The tap is installed last and checked to be the only one.
+//  - agent.middlewares (a TypeScript-private field) is a readable array. If an
+//    SDK change reshapes it the run is refused rather than guessed at.
+//  - No other middleware is allowed. An asynchronous one (for example the
+//    runtime's MCP middleware) can run tools itself, rewrite the stream or add
+//    events after the producer finished, so the log would no longer be what the
+//    client received. There is no allowlist: an SDK upgrade needs its own review.
 // Authority: docs/LOCAL_FIRST_C4_LANDING_BOUNDARY.md sections 8 to 18 and 23.
 
 export type RunRejectCode =
   | 'THREAD_NOT_OWNED'
   | 'THREAD_ALREADY_RUNNING'
   | 'STALE_TOOL_HISTORY'
-  | 'DUPLICATE_RUN_ID';
+  | 'DUPLICATE_RUN_ID'
+  | 'UNSUPPORTED_MIDDLEWARE';
 
 // Thrown synchronously from run(), before anything is written, the agent is
 // started or a tool executes. THREAD_ALREADY_RUNNING is the explicit busy
@@ -108,6 +137,8 @@ export interface ReadyResult {
 interface ActiveRun {
   runId: string;
   agent: AbstractAgent;
+  // The persistence tap this run installed on the agent, removed when it ends.
+  tap?: DurableFenceTap;
   // The events of this run that are committed, in order.
   events: BaseEvent[];
   // Replays the run from its first event to every late subscriber and is what
@@ -125,6 +156,85 @@ interface ActiveRun {
   // Resolves once the run is fully over (view attempted, thread released).
   done: Promise<void>;
   release: () => void;
+}
+
+// ------------------------------------------------------------------- the fence
+
+// Class names only, never the middleware's own data (an MCP middleware carries
+// server URLs and headers).
+function middlewareNames(chain: readonly unknown[]): string {
+  return chain
+    .map((entry) => {
+      const name =
+        entry !== null && typeof entry === 'object'
+          ? (entry as object).constructor?.name
+          : typeof entry;
+      return String(name ?? 'unknown')
+        .replace(/[^\w$.-]/g, '?')
+        .slice(0, 40);
+    })
+    .join(', ');
+}
+
+type MiddlewareCheck = { ok: true } | { ok: false; reason: string };
+
+// Reads the agent's middleware chain. `expected` is what this run may find: no
+// middleware before the tap is installed, exactly the tap afterwards.
+function checkMiddlewares(
+  agent: AbstractAgent,
+  expected: readonly unknown[],
+): MiddlewareCheck {
+  const chain = (agent as unknown as { middlewares?: unknown }).middlewares;
+  if (!Array.isArray(chain))
+    return {
+      ok: false,
+      reason:
+        'the agent middleware chain is not readable (the SDK layout changed)',
+    };
+  const matches =
+    chain.length === expected.length &&
+    chain.every((entry, index) => entry === expected[index]);
+  if (matches) return { ok: true };
+  const foreign = chain.filter((entry) => !expected.includes(entry));
+  return {
+    ok: false,
+    reason: foreign.length
+      ? `unsupported middleware on the agent (${foreign.length}: ${middlewareNames(foreign)}); none is allowed`
+      : 'the persistence middleware is missing, duplicated or out of place',
+  };
+}
+
+// The synchronous persistence operator of one run. It is the producer's
+// downstream: nothing the producer pushes next can happen before this returns.
+class DurableFenceTap extends Middleware {
+  constructor(
+    private readonly agent: AbstractAgent,
+    private readonly threadId: string,
+    private readonly runId: string,
+    private readonly handle: (event: BaseEvent) => void,
+  ) {
+    super();
+  }
+
+  run(input: RunAgentInput, next: AbstractAgent): Observable<BaseEvent> {
+    // The latest point before execution: the chain is composed, and nothing has
+    // been requested from the model yet because that happens when the source
+    // below is subscribed to.
+    const verdict = checkMiddlewares(this.agent, [this]);
+    if (!verdict.ok) return throwError(() => new Error(verdict.reason));
+    if (input.threadId !== this.threadId || input.runId !== this.runId)
+      return throwError(
+        () => new Error('the persistence middleware belongs to another run'),
+      );
+    // runNext applies transformChunks. verifyEvents keeps the log to the events
+    // the pipeline itself would accept. The operator form matters: an error
+    // thrown here ends the stream and rejects runAgent, where a throw in a
+    // subscriber callback is swallowed (onEvent) or reported late and ignored.
+    return this.runNext(input, next).pipe(
+      verifyEvents(false),
+      tap((event) => this.handle(event)),
+    );
+  }
 }
 
 type Loose = { type: string; [field: string]: unknown };
@@ -192,6 +302,10 @@ export class DurableAgentRunner extends AgentRunner {
     const agentId = agent.agentId;
     if (!agentId || !this.ownsThread(threadId, agentId))
       reject('THREAD_NOT_OWNED', `Agent does not own thread ${threadId}`);
+    // 1b. No middleware may stand between the producer and the persistence tap.
+    //     Before anything is written or started.
+    const admitted = checkMiddlewares(agent, []);
+    if (!admitted.ok) reject('UNSUPPORTED_MIDDLEWARE', admitted.reason);
     this.initializeStorage();
     // 2. One run per thread. The check and active.set below are one synchronous
     //    stretch with no await between them.
@@ -282,24 +396,47 @@ export class DurableAgentRunner extends AgentRunner {
     state: ActiveRun,
     request: AgentRunnerRunRequest,
   ): Promise<void> {
+    const { agent } = request;
+    let failure: unknown;
     try {
-      await request.agent.runAgent(request.input, {
-        onEvent: ({ event }) => this.onAgentEvent(threadId, state, event),
-      });
-      await this.finalizeRun(threadId, state, state.failure);
+      const tap = new DurableFenceTap(agent, threadId, state.runId, (event) =>
+        this.persistAndPublish(threadId, state, event),
+      );
+      state.tap = tap;
+      agent.use(tap);
+      // use() is the public way in; make sure it did what the fence relies on.
+      const installed = checkMiddlewares(agent, [tap]);
+      if (!installed.ok) throw new Error(installed.reason);
+      await agent.runAgent(request.input);
     } catch (error) {
-      await this.finalizeRun(threadId, state, state.failure ?? error);
+      failure = error;
     }
+    // Before the run is released, so a caller that starts the next run on this
+    // agent from the stream's completion finds the chain it came with.
+    this.uninstall(agent, state);
+    await this.finalizeRun(threadId, state, state.failure ?? failure);
   }
 
-  // Persist and commit, then publish. If the write fails the event is not
-  // published, the agent is aborted and the run is finalized with that error.
-  private onAgentEvent(
+  // Takes this run's tap off the agent, by identity, however the run ended, so
+  // an agent that is used again starts from the chain it came with.
+  private uninstall(agent: AbstractAgent, state: ActiveRun): void {
+    const chain = (agent as unknown as { middlewares?: unknown }).middlewares;
+    if (!Array.isArray(chain) || !state.tap) return;
+    const at = chain.indexOf(state.tap);
+    if (at >= 0) chain.splice(at, 1);
+    state.tap = undefined;
+  }
+
+  // Runs inside the producer's push (see DurableFenceTap): persist and commit,
+  // then publish. If the write fails the event is not published, the producer is
+  // aborted before it can go on, and the error ends the stream; the run is then
+  // finalized with that error.
+  private persistAndPublish(
     threadId: string,
     state: ActiveRun,
     event: BaseEvent,
   ): void {
-    if (state.failure !== undefined) return;
+    if (state.failure !== undefined) throw state.failure;
     // RUN_STARTED is already durable (committed before the agent started). The
     // persisted event, which carries the sanitised input, is what is published.
     if (event.type === 'RUN_STARTED') {
@@ -317,9 +454,9 @@ export class DurableAgentRunner extends AgentRunner {
       try {
         state.agent.abortRun();
       } catch {
-        // the run is finalized below either way
+        // the stream is ended below either way
       }
-      return;
+      throw error;
     }
     this.publishStart(state);
     state.events.push(stored.event);
@@ -337,6 +474,39 @@ export class DurableAgentRunner extends AgentRunner {
     state.subject.next(state.persistedStart);
   }
 
+  // A failure can end a run after a server executor was entered and before its
+  // result was recorded (a failed write of the result, a dropped stream). The
+  // stock finalizer closes such a call with an "error" result, which reads as "it
+  // did not run". The tool may have run, so the call gets the same unknown-outcome
+  // result recovery writes (run-rules.ts), and nothing retries it.
+  private keepUnknownOutcome(
+    events: readonly BaseEvent[],
+    closers: BaseEvent[],
+  ): BaseEvent[] {
+    const pending = new Set(
+      classifyRun(events, this.clientExecutableToolNames).pendingServer.map(
+        (call) => call.toolCallId,
+      ),
+    );
+    if (!pending.size) return closers;
+    return closers.map((event) => {
+      const stored = loose(event);
+      const toolCallId =
+        typeof stored.toolCallId === 'string' ? stored.toolCallId : undefined;
+      return stored.type === 'TOOL_CALL_RESULT' &&
+        toolCallId !== undefined &&
+        pending.has(toolCallId)
+        ? ({
+            type: 'TOOL_CALL_RESULT',
+            toolCallId,
+            messageId: `${toolCallId}-unknown-outcome`,
+            role: 'tool',
+            content: UNKNOWN_OUTCOME_CONTENT,
+          } as unknown as BaseEvent)
+        : event;
+    });
+  }
+
   private async finalizeRun(
     threadId: string,
     state: ActiveRun,
@@ -350,12 +520,16 @@ export class DurableAgentRunner extends AgentRunner {
           : failure instanceof Error
             ? failure.message
             : String(failure);
-      const appended = finalizeRunEvents([...state.events], {
+      const closers = finalizeRunEvents([...state.events], {
         stopRequested: state.stopRequested,
         ...(interruption !== undefined
           ? { interruptionMessage: interruption }
           : {}),
       });
+      const appended =
+        interruption !== undefined
+          ? this.keepUnknownOutcome(state.events, closers)
+          : closers;
       if (appended.length) {
         const last = appended[appended.length - 1];
         // One transaction for the closers, the terminal event and the status.

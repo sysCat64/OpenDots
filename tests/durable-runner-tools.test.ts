@@ -76,16 +76,15 @@ describe('a server tool', () => {
   });
 });
 
-describe('finding: the producer is not held back while an event is persisted', () => {
-  // Characterization of the pinned @ag-ui/client 0.0.59 pipeline, found while
-  // building the SIGKILL windows. The agent keeps running while onEvent
-  // persists, so a tool executor can start before the TOOL_CALL_END that
-  // announced it is durable. The recovery class `tool_args_incomplete` ("the
-  // executor cannot have run") rests on END being durable before the executor
-  // starts. This is reported as an open item (see the C4b report); if the
-  // pipeline ever back-pressures the producer this test should be updated on
-  // purpose.
-  it('lets a tool executor start before its TOOL_CALL_END is durable', async () => {
+describe('the producer is held back while an event is persisted (A1 fence)', () => {
+  // The pinned @ag-ui/client 0.0.59 pipeline does not wait for a subscriber
+  // (onEvent) while the producer goes on, so persisting from onEvent let a tool
+  // executor start before the TOOL_CALL_END that announced it was durable. The
+  // runner now persists inside the producer's own push (see DurableFenceTap), so
+  // the whole call is durable when the executor enters. The full ordering and
+  // failure matrix is in durable-runner-fence.test.ts and, for the production
+  // DotAgent, durable-runner-dotagent-fence.test.ts.
+  it('has TOOL_CALL_END durable when a tool executor starts', async () => {
     const h = make();
     const observer = h.observer();
     let endDurableWhenExecutorStarted: boolean | undefined;
@@ -102,7 +101,7 @@ describe('finding: the producer is not held back while an event is persisted', (
       finished(input),
     ]);
     await runToEnd(h.runner, agent, runInput('t1', 'r1', [user('u1')]));
-    expect(endDurableWhenExecutorStarted).toBe(false);
+    expect(endDurableWhenExecutorStarted).toBe(true);
   });
 });
 

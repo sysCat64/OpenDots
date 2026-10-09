@@ -40,6 +40,13 @@ import {
 // state is written through the log and a restarted runner recovers it. The real
 // SIGKILL evidence for the same classes is tests/crash. Recovery must never call
 // a model or execute a tool, so every case carries counters that stay at zero.
+//
+// These cases are a RECOVERY SEMANTIC ORACLE UNDER A KNOWN DURABLE STATE: they
+// prove how an already-known durable state is recovered. They do not, by
+// themselves, prove that production execution cannot outrun persistence (for
+// example that "incomplete tool arguments" means the executor did not run). That
+// is the A1 fence, proven separately on the production DotAgent in
+// durable-runner-dotagent-fence.test.ts and tests/crash/dot-sigkill.test.ts.
 const harnesses: Harness[] = [];
 const make = () => {
   const harness = createHarness();
@@ -125,7 +132,7 @@ describe('the closed recovery classes', () => {
     });
   });
 
-  it('C. incomplete tool arguments (the executor cannot have run): stock failure result, no execution', async () => {
+  it('C. incomplete tool arguments (recovered as not run, given the fence): stock failure result, no execution', async () => {
     const h = make();
     const { counters } = never();
     seedRun(h.log, {

@@ -21,10 +21,15 @@ export const RUN = 'crash-run-1';
 export interface ScenarioContext {
   // A side effect of the tool executor: recorded where the parent can read it.
   executeTool(toolCallId: string): void;
-  // Resolves once an event of this type is committed for the run. The AG-UI
-  // pipeline does not hold the producer back while a subscriber persists, so an
-  // executor that must run only after its call is durable waits for it (the
-  // method P2a-4 used for its oracle gates).
+  // Resolves once an event of this type is committed for the run. These gated
+  // scenarios are a RECOVERY SEMANTIC ORACLE UNDER A KNOWN DURABLE STATE: they
+  // fix which events are durable when the process dies and prove how that state
+  // is recovered. The gate is not what makes execution safe, and these scenarios
+  // do not by themselves prove that production execution cannot outrun
+  // persistence. That proof is the A1 fence (DurableFenceTap, persisting inside
+  // the producer's push) shown on the production DotAgent by
+  // tests/durable-runner-dotagent-fence.test.ts and, with real SIGKILL, by
+  // tests/crash/dot-sigkill.test.ts.
   awaitDurable(eventType: string): Promise<void>;
   // Writes the marker and blocks forever, to be killed. A no-op in a run that
   // is driven to its end.
@@ -73,7 +78,9 @@ export const SCENARIOS: Record<string, Scenario> = {
       finished(input),
     ],
   },
-  // C: the arguments were still streaming, so the executor cannot have run.
+  // C: the arguments were still streaming. Given that durable state, recovery
+  // treats the executor as not run; that this state is a faithful record rests on
+  // the A1 fence (see awaitDurable).
   'tool-args-incomplete': {
     tools: [],
     freeze: { at: 'event', type: 'TOOL_CALL_ARGS' },
