@@ -20,7 +20,8 @@ const RULES = 'src/server/run-rules.ts';
 const RUNNER = 'src/server/durable-runner.ts';
 const FACTS = 'src/server/run-facts.ts';
 const HEADLESS_LOCAL = 'src/server/headless-local.ts';
-const DORMANT = [LOG, RULES, RUNNER, FACTS, HEADLESS_LOCAL];
+const DIAGNOSIS = 'src/server/run-diagnosis.ts';
+const DORMANT = [LOG, RULES, RUNNER, FACTS, HEADLESS_LOCAL, DIAGNOSIS];
 
 // Every way the application starts: the server, the ChatGPT plan CLI, the
 // browser worker and the web client (index.html loads src/client/main.tsx).
@@ -98,7 +99,7 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
     for (const [path, text] of Object.entries(sources)) {
       if (DORMANT.includes(path)) continue;
       expect(text, path).not.toMatch(
-        /conversation-log|run-rules|run-facts|durable-runner|headless-local/,
+        /conversation-log|run-rules|run-facts|run-diagnosis|durable-runner|headless-local/,
       );
     }
   });
@@ -153,6 +154,15 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
       './run-rules.js',
       './telemetry-guard.js',
     ]);
+    // R-DIAG: the read-only diagnosis depends on the log's types and its replay
+    // fold, the facts' pure derivations, the pure rules and the guard, and
+    // nothing else. It is imported by no module at all.
+    expect(local(DIAGNOSIS).sort()).toEqual([
+      './conversation-log.js',
+      './run-facts.js',
+      './run-rules.js',
+      './telemetry-guard.js',
+    ]);
     // The C5 adapter's only application dependencies: the runner, the existing
     // currentTurnText (headless.ts, which loads the guard first itself), the
     // voice receipt prefix and the guard. It touches no store, platform or Dot.
@@ -178,6 +188,7 @@ describe('the detector can fail (negative controls)', () => {
     'src/server/durable-runner.ts': 'export const runner = 1;\n',
     'src/server/run-facts.ts': 'export const facts = 1;\n',
     'src/server/headless-local.ts': 'export const local = 1;\n',
+    'src/server/run-diagnosis.ts': 'export const diagnosis = 1;\n',
     ...overrides,
   });
 
@@ -213,6 +224,15 @@ describe('the detector can fail (negative controls)', () => {
     });
     expect(reachable('src/server/index.ts', sources).has(FACTS)).toBe(true);
     expect(importers(FACTS, sources)).toEqual(['src/server/app.ts']);
+  });
+
+  it('flags a production module that imports the read-only diagnosis', () => {
+    const sources = synthetic({
+      'src/server/app.ts':
+        "import { diagnosis } from './run-diagnosis.js';\nexport const app = diagnosis;\n",
+    });
+    expect(reachable('src/server/index.ts', sources).has(DIAGNOSIS)).toBe(true);
+    expect(importers(DIAGNOSIS, sources)).toEqual(['src/server/app.ts']);
   });
 
   it('flags a production module that imports the headless adapter', () => {

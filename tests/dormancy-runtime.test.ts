@@ -30,7 +30,7 @@ const TRACE = fileURLToPath(
   new URL('./fixtures/dormancy/module-trace.mjs', import.meta.url),
 );
 const DORMANT =
-  /conversation-log|run-rules|run-facts|durable-runner|headless-local/;
+  /conversation-log|run-rules|run-facts|run-diagnosis|durable-runner|headless-local/;
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -72,6 +72,7 @@ describe('the trace itself can see a dormant module (positive control)', () => {
     ['conversation-log', './src/server/conversation-log.ts'],
     ['run-rules', './src/server/run-rules.ts'],
     ['run-facts', './src/server/run-facts.ts'],
+    ['run-diagnosis', './src/server/run-diagnosis.ts'],
     ['durable-runner', './src/server/durable-runner.ts'],
     ['headless-local', './src/server/headless-local.ts'],
   ])(

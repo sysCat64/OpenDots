@@ -15,6 +15,10 @@ import { readSources } from './helpers/evaluation-order';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const FACTS = 'src/server/run-facts.ts';
 const RUNNER = 'src/server/durable-runner.ts';
+// R-DIAG, the one other reader of the facts: it takes the runner's read-only
+// `facts` and the pure derivations, and is itself bounded by
+// tests/run-diagnosis-boundary.test.ts.
+const DIAGNOSIS = 'src/server/run-diagnosis.ts';
 const sources = readSources(root, 'src');
 
 // The module's code without its comments, so a scan reads what it does and not
@@ -35,9 +39,9 @@ describe('the facts surface stays server-internal', () => {
     );
   });
 
-  it('is named by no source file but the runner (which constructs it) and itself', () => {
+  it('is named by no source file but the runner (which constructs it), the read-only diagnosis and itself', () => {
     for (const [path, text] of Object.entries(sources)) {
-      if (path === FACTS || path === RUNNER) continue;
+      if (path === FACTS || path === RUNNER || path === DIAGNOSIS) continue;
       expect(text, path).not.toMatch(/run-facts|RunFacts/);
     }
   });
@@ -46,7 +50,7 @@ describe('the facts surface stays server-internal', () => {
     // Includes the SDK-facing accessor names. `getThreadState` (the SDK's own
     // method) is a different identifier and is not matched.
     for (const [path, text] of Object.entries(sources)) {
-      if (path === FACTS || path === RUNNER) continue;
+      if (path === FACTS || path === RUNNER || path === DIAGNOSIS) continue;
       expect(text, path).not.toMatch(
         /\.facts\b|\bunresolvedRuns\b|\bactiveRuns\b|\battemptFacts\b|\bterminalResult\b/,
       );
