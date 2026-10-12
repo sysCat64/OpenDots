@@ -8,13 +8,27 @@ import {
 import type { BaseEvent } from '@ag-ui/core';
 import { of } from 'rxjs';
 import { snapshotDatabase } from './helpers/db-snapshot';
-import { user } from './helpers/event-fixtures';
+import {
+  CLIENT_TOOL,
+  SERVER_TOOL,
+  callEvents,
+  reasoningEvents,
+  runStarted,
+  user,
+} from './helpers/event-fixtures';
 import {
   createHarness,
   runInput,
+  seedRun,
+  until,
   type Harness,
 } from './helpers/runner-harness';
-import { ScriptedAgent, finished, textMessage } from './helpers/scripted-agent';
+import {
+  HANG,
+  ScriptedAgent,
+  finished,
+  textMessage,
+} from './helpers/scripted-agent';
 
 // The real installed CopilotSseRuntime, offline, behind its real fetch handler.
 // Three distinct contracts are kept apart here:
@@ -321,5 +335,106 @@ describe('clearThreads through the real handler (DEC-16 defence in depth)', () =
       await handler(new Request(`${BASE}/threads?agentId=dot-route`))
     ).json();
     expect(list.threads.map((t: { id: string }) => t.id)).toEqual(['thread-1']);
+  });
+});
+
+// What a browser sees when the real durable runner refuses a run, behind the
+// real SDK handler. RECORDED, NOT APPROVED: both refusals reach the browser as a
+// 200 text/event-stream with an empty body, the same answer as for a thread that
+// is not owned. That is not an acceptable production experience (the user would
+// see a turn that neither ran nor failed), and it is not changed here: no route
+// is touched in this change. C6 must map a synchronous RunRejectedError to a
+// distinct, observable HTTP and UI outcome before activation (DEC-13, and the
+// activation gates THREAD-REFUSAL-OBSERVABLE and UNRESOLVED-RUN-RESOLUTION in
+// docs/LOCAL_FIRST_C6_ACTIVATION_BLOCKERS.md).
+describe('D. refusals of the real durable runner as the real handler answers them', () => {
+  const BODY = (runId: string) =>
+    runInput('thread-1', runId, [user(`m-${runId}`, 'hello')]);
+
+  it('THREAD_ALREADY_RUNNING: HTTP 200, an event stream, an empty body, nothing written', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const h = createHarness();
+    harnesses.push(h);
+    const agent = new ScriptedAgent(
+      () => [...textMessage('a1', 'part'), HANG],
+      'dot-route',
+    );
+    const handler = handlerFor(h.runner, 'dot-route', agent);
+    // The first run stays open (its response body is not consumed here).
+    const first = await handler(post('/agent/dot-route/run', BODY('r1')));
+    expect(first.status).toBe(200);
+    await until(() => agent.stats.emitted >= 4, 'first run emitting');
+    const before = snapshotDatabase(h.throwaway.path);
+    const invocations = agent.stats.invocations;
+    const second = await handler(post('/agent/dot-route/run', BODY('r2')));
+    expect(second.status).toBe(200);
+    expect(second.headers.get('content-type')).toContain('text/event-stream');
+    expect(await second.text()).toBe('');
+    expect(agent.stats.invocations).toBe(invocations);
+    expect(h.log.getRun('thread-1', 'r2')).toBeUndefined();
+    expect(snapshotDatabase(h.throwaway.path)).toBe(before);
+    void first.body?.cancel();
+    await h.runner.stop({ threadId: 'thread-1', runId: 'r1' });
+    await until(() => h.log.getRun('thread-1', 'r1')?.status !== 'running');
+  });
+
+  it('THREAD_HAS_UNRESOLVED_RUN: HTTP 200, an event stream, an empty body, no completed turn, nothing written', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const h = createHarness();
+    harnesses.push(h);
+    seedRun(h.log, {
+      threadId: 'thread-1',
+      runId: 'r-dead',
+      agentId: 'dot-route',
+      start: runStarted([], [], { threadId: 'thread-1', runId: 'r-dead' }),
+      events: reasoningEvents('m1', false),
+    });
+    const agent = new ScriptedAgent(
+      (input) => [
+        ...textMessage('a1', 'must never be produced'),
+        finished(input),
+      ],
+      'dot-route',
+    );
+    const handler = handlerFor(h.runner, 'dot-route', agent);
+    const before = snapshotDatabase(h.throwaway.path);
+    const response = await handler(post('/agent/dot-route/run', BODY('r-new')));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const body = await response.text();
+    expect(body).toBe('');
+    expect(body).not.toContain('RUN_FINISHED');
+    expect(agent.stats.invocations).toBe(0);
+    expect(h.log.getRun('thread-1', 'r-new')).toBeUndefined();
+    expect(h.log.getRun('thread-1', 'r-dead')?.status).toBe('running');
+    expect(snapshotDatabase(h.throwaway.path)).toBe(before);
+  });
+
+  it('the server-owned tools do not change the shape: an unresolved client/server mix is refused the same way', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const h = createHarness();
+    harnesses.push(h);
+    seedRun(h.log, {
+      threadId: 'thread-1',
+      runId: 'r-dead',
+      agentId: 'dot-route',
+      start: runStarted([CLIENT_TOOL], [], {
+        threadId: 'thread-1',
+        runId: 'r-dead',
+      }),
+      events: [
+        ...callEvents('c1', SERVER_TOOL, 1),
+        ...callEvents('c2', CLIENT_TOOL, 1, 'a2'),
+      ],
+    });
+    const handler = handlerFor(
+      h.runner,
+      'dot-route',
+      new ScriptedAgent((input) => [finished(input)], 'dot-route'),
+    );
+    const response = await handler(post('/agent/dot-route/run', BODY('r-new')));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('');
+    expect(h.log.getRun('thread-1', 'r-new')).toBeUndefined();
   });
 });

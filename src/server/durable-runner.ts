@@ -76,6 +76,7 @@ import { RunFacts } from './run-facts.js';
 export type RunRejectCode =
   | 'THREAD_NOT_OWNED'
   | 'THREAD_ALREADY_RUNNING'
+  | 'THREAD_HAS_UNRESOLVED_RUN'
   | 'STALE_TOOL_HISTORY'
   | 'DUPLICATE_RUN_ID'
   | 'UNSUPPORTED_MIDDLEWARE';
@@ -83,6 +84,11 @@ export type RunRejectCode =
 // Thrown synchronously from run(), before anything is written, the agent is
 // started or a tool executes. THREAD_ALREADY_RUNNING is the explicit busy
 // conflict a caller can map; the runner never waits or queues.
+// THREAD_HAS_UNRESOLVED_RUN is the other refusal of a free-looking thread: the
+// log holds a run of it that recovery leaves open (R22, R24, R26b), so its
+// outcome is unknown or its client tool call is unanswered. It is not a busy
+// condition and retrying does not clear it; only resolving that run does, and
+// nothing resolves it yet.
 export class RunRejectedError extends Error {
   constructor(
     readonly code: RunRejectCode,
@@ -323,8 +329,23 @@ export class DurableAgentRunner extends AgentRunner {
     if (this.active.has(threadId))
       reject('THREAD_ALREADY_RUNNING', `Thread ${threadId} already has a run`);
     // 3. A dead run of this thread is closed first, so the interlock sees any
-    //    result recovery wrote.
-    this.recoverRuns(threadId);
+    //    result recovery wrote. A run that recovery had to leave open (R22,
+    //    R24, R26b) is not resolved by it: its server tool may have run with an
+    //    unknown outcome, or a client tool call may still be unanswered. The
+    //    thread then admits nothing. The decision is made from the result of
+    //    this very recovery and, with the reservation below, in one synchronous
+    //    stretch (no await, no second read), so two same-turn requests cannot
+    //    both pass. Nothing is closed, rewritten or invented here and nothing
+    //    is written for the refused run. R17 is unchanged: this is the
+    //    exclusion of one process.
+    const unresolved = this.recoverRuns(threadId).filter(
+      (record) => record.outcome === 'deferred',
+    );
+    if (unresolved.length)
+      reject(
+        'THREAD_HAS_UNRESOLVED_RUN',
+        `Thread ${threadId} has ${unresolved.length} unresolved run(s); no new run is admitted until they are resolved`,
+      );
     // 4. The client's history must not leave out a result the log holds.
     const stale = findStaleToolHistory(
       input,

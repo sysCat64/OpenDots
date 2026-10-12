@@ -110,7 +110,11 @@ error and changes no UI; the replay behaviour is C6/shipping.
 
 Open. Exclusion is process-local (`active` map). A second process on the same file is
 not recognised, and its `ready()` would recover the first process's live run. The
-adapter inherits this; it adds no locking of its own.
+adapter inherits this; it adds no locking of its own. The unresolved-run refusal
+(P-ADM, below) is made by the same process-local `run()` and does not change this: a
+second writer process could still pass between that check and its own reservation.
+An in-transaction guard would need a change to the frozen `conversation-log.ts`
+`startRun` surface and is not part of P-ADM.
 
 ## ISRUNNING-ADMISSION: `isRunning()` is not admission authority (new, C6 gate)
 
@@ -128,6 +132,68 @@ the runner, which is a separate C4b-level correction requiring review). Acceptan
 test: stop requested with an executor in flight -> the 409/busy path still reports
 busy, provider 0, tool 0, durable writes 0, including a race lost between the advisory
 check and admission.
+
+Update (C4c): the read-only busy accessor now exists as `runner.facts.threadState`
+(dormant). It is advisory by construction: only an `idle` state means a thread looks
+free, and admission still belongs to `run()`. The gate above is unchanged.
+
+## UNRESOLVED-RUN-RESOLUTION: nothing resolves a deferred run (new, C6 gate)
+
+Found in the C4c review (P-ADM). The rules leave three classes running with nothing
+written: R22 (a pending client and a pending server call), R24 (open text or an
+incomplete call beside a pending call) and R26b (any other unclassified lifecycle, for
+example open reasoning or a state event, which the TanStack converter emits). Before
+P-ADM the runner admitted a new run on such a thread. It now refuses
+(`THREAD_HAS_UNRESOLVED_RUN`) and the run is left exactly as it was. That is the safe
+direction, and it means **a thread with such a run stays blocked indefinitely**:
+`ready()` re-reports it, `stop()` returns false for it (it is not driven by this
+process), `isRunning()` is false. A dormant runner may stay that way. Activating C6
+with no resolution policy is not authorized: a thread would be blocked for good, and a
+scheduler or a browser retry would meet an error nothing can clear.
+
+A separately reviewed design must, before C6 activation:
+
+1. Distinguish R22, R24 and R26b; they need different handling and the stock finalizer
+   is wrong for two of them (it gives a client HITL call an error result, and it does
+   not close `REASONING_*`).
+2. Protect client/HITL semantics: a client tool call that is waiting for a person is not
+   an error and must not be given an error result.
+3. Never fabricate a server tool success, and keep an ambiguous effect outcome ambiguous
+   (the recorded unknown-outcome marker, never "failed" and never "succeeded").
+4. Require the appropriate owner authority for any manual intervention, and audit every
+   resolution (who, when, what was appended, why).
+5. Show that a thread admits again only after a safe resolution, and that a resolution
+   that fails or is repeated leaves the log consistent.
+
+Not authorized in the meantime: closing, rewriting, expiring or auto-resolving such a
+run, in the runner, in recovery or in the scheduler.
+
+## THREAD-REFUSAL-OBSERVABLE: a refusal must reach the user as a refusal (new, C6 gate)
+
+Recorded, not approved (`tests/durable-runner-sdk-handler.test.ts`, section D, the
+real `CopilotSseRuntime` behind its real fetch handler). When `run()` refuses, the SDK
+handler answers **HTTP 200 with `content-type: text/event-stream` and an empty body**,
+for `THREAD_ALREADY_RUNNING`, `THREAD_HAS_UNRESOLVED_RUN` and `THREAD_NOT_OWNED` alike.
+The browser sees a turn that neither ran nor failed. That is not an acceptable
+production experience, and no route is changed by C4c or P-ADM. Before C6 activation
+(DEC-13) the HTTP/UI boundary must map a synchronous `RunRejectedError` to an
+observable, correctly classified outcome per code (busy, unresolved, not owned), with
+a visible user message, and a rejected run must never be shown as a completed turn.
+The headless adapter already passes a non-busy rejection through unmapped, so a
+scheduled or voice turn fails loudly; that mapping to a scheduler state (for example
+`needs_review`) is the DEC-3 design.
+
+## CORRUPT-DURABLE-HISTORY: an unreadable run row is fail-closed but untyped (observation)
+
+Recorded, not changed. A running row with an unreadable event (invalid JSON) makes
+`run()` on that thread throw the underlying `SyntaxError` out of the admission-time
+recovery (nothing is admitted, nothing is written), and makes `ready()` reject, which
+fails boot for the whole database on one bad row. Both are fail-closed, neither is a
+typed error. `runner.facts` reports the same row as `unresolved` / `inconsistent` and
+throws `INCONSISTENT_DURABLE_STATE` with enumerated reasons, and never reports it as
+idle, not dispatched or safe to retry. A typed admission code, a boot policy for a
+corrupt row and any repair are a separate decision (no schema or recovery redesign is
+done opportunistically).
 
 ## SCHEDULER-REQUEUE: scheduler-level retry is outside the runner guarantee (new)
 
@@ -169,4 +235,6 @@ long-thread performance (open, C8).
 ## Status
 
 All items open. None blocks C5 (a dormant adapter). C6: HOLD. Completing C5 closes
-none of them (owner approval 2026-10-10).
+none of them (owner approval 2026-10-10). C4c and P-ADM (2026-10-12) close none of
+them either; they add UNRESOLVED-RUN-RESOLUTION and THREAD-REFUSAL-OBSERVABLE as C6
+activation gates and record CORRUPT-DURABLE-HISTORY.

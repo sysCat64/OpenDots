@@ -19,6 +19,7 @@ import {
 import {
   collect,
   createHarness,
+  prime,
   restartRunner,
   runInput,
   runToEnd,
@@ -325,24 +326,46 @@ describe('the open classes stay open (R26b, R22, R24)', () => {
     },
   );
 
-  it('does not block the thread: a new run starts beside a deferred one, and ready() reports it again', async () => {
+  // REVERSED (P-ADM, owner decision UD3, 2026-10-12). C4 accepted "a deferred
+  // run does not block its thread: a new run starts beside it". That rule let a
+  // caller (a scheduler repeating a prompt, a browser retry) start a new run on a
+  // thread whose last run may have executed a server tool with an unknown
+  // outcome, or left a client tool call open, with nothing to say so. The rule
+  // is replaced, deliberately and not by accident: while a durable run of the
+  // thread is unresolved, the thread admits no new run. The deferred run itself
+  // stays exactly as it was (never closed, rewritten or given an outcome), and
+  // ready() keeps reporting it. Nothing resolves it yet (C6 activation gate
+  // UNRESOLVED-RUN-RESOLUTION). docs/LOCAL_FIRST_C4_LANDING_BOUNDARY.md
+  // sections 11 and 18 carry the amendment.
+  it('blocks the thread: a new run is refused beside a deferred one, which stays as it was, and ready() reports it again', async () => {
     const h = make();
     seedRun(h.log, {
       ...ids,
       start: runStarted([], [user('u1')], ids),
       events: reasoningEvents('z1', false),
     });
+    const before = snapshotDatabase(h.throwaway.path);
     const fresh = restartRunner(h);
-    const events = await runToEnd(
-      fresh.runner,
-      new ScriptedAgent((input) => [
-        ...textMessage('a2', 'ok'),
-        finished(input),
-      ]),
-      runInput(THREAD, 'r2', [user('u2')]),
-    );
-    expect(typesOf(events).at(-1)).toBe('RUN_FINISHED');
+    const agent = new ScriptedAgent((input) => [
+      ...textMessage('a2', 'ok'),
+      finished(input),
+    ]);
+    const input = runInput(THREAD, 'r2', [user('u2')]);
+    let code: string | undefined;
+    try {
+      fresh.runner.run({
+        threadId: THREAD,
+        agent: prime(agent, input),
+        input,
+      });
+    } catch (error) {
+      code = (error as { code?: string }).code;
+    }
+    expect(code).toBe('THREAD_HAS_UNRESOLVED_RUN');
+    expect(agent.stats.invocations).toBe(0);
+    expect(h.log.getRun(THREAD, 'r2')).toBeUndefined();
     expect(h.log.getRun(THREAD, RUN)?.status).toBe('running');
+    expect(snapshotDatabase(h.throwaway.path)).toBe(before);
     const again = await restartRunner(h).runner.ready();
     expect(again.deferred).toHaveLength(1);
   });
