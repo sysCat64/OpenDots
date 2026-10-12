@@ -18,8 +18,9 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const LOG = 'src/server/conversation-log.ts';
 const RULES = 'src/server/run-rules.ts';
 const RUNNER = 'src/server/durable-runner.ts';
+const FACTS = 'src/server/run-facts.ts';
 const HEADLESS_LOCAL = 'src/server/headless-local.ts';
-const DORMANT = [LOG, RULES, RUNNER, HEADLESS_LOCAL];
+const DORMANT = [LOG, RULES, RUNNER, FACTS, HEADLESS_LOCAL];
 
 // Every way the application starts: the server, the ChatGPT plan CLI, the
 // browser worker and the web client (index.html loads src/client/main.tsx).
@@ -97,7 +98,7 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
     for (const [path, text] of Object.entries(sources)) {
       if (DORMANT.includes(path)) continue;
       expect(text, path).not.toMatch(
-        /conversation-log|run-rules|durable-runner|headless-local/,
+        /conversation-log|run-rules|run-facts|durable-runner|headless-local/,
       );
     }
   });
@@ -141,6 +142,14 @@ describe('DORM-1: the dormant modules are unreachable from the production roots'
     expect(local(RULES)).toEqual(['./telemetry-guard.js']);
     expect(local(RUNNER).sort()).toEqual([
       './conversation-log.js',
+      './run-facts.js',
+      './run-rules.js',
+      './telemetry-guard.js',
+    ]);
+    // C4c: the read-only facts depend on the log's types and status list, the
+    // pure rules and the guard, and nothing else.
+    expect(local(FACTS).sort()).toEqual([
+      './conversation-log.js',
       './run-rules.js',
       './telemetry-guard.js',
     ]);
@@ -167,6 +176,7 @@ describe('the detector can fail (negative controls)', () => {
     'src/server/conversation-log.ts': 'export const log = 1;\n',
     'src/server/run-rules.ts': 'export const rules = 1;\n',
     'src/server/durable-runner.ts': 'export const runner = 1;\n',
+    'src/server/run-facts.ts': 'export const facts = 1;\n',
     'src/server/headless-local.ts': 'export const local = 1;\n',
     ...overrides,
   });
@@ -194,6 +204,15 @@ describe('the detector can fail (negative controls)', () => {
     });
     expect(reachable('src/server/index.ts', sources).has(RUNNER)).toBe(true);
     expect(importers(RUNNER, sources)).toEqual(['src/server/app.ts']);
+  });
+
+  it('flags a production module that imports the read-only facts', () => {
+    const sources = synthetic({
+      'src/server/app.ts':
+        "import { facts } from './run-facts.js';\nexport const app = facts;\n",
+    });
+    expect(reachable('src/server/index.ts', sources).has(FACTS)).toBe(true);
+    expect(importers(FACTS, sources)).toEqual(['src/server/app.ts']);
   });
 
   it('flags a production module that imports the headless adapter', () => {

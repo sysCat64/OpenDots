@@ -28,7 +28,8 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const TRACE = fileURLToPath(
   new URL('./fixtures/dormancy/module-trace.mjs', import.meta.url),
 );
-const DORMANT = /conversation-log|run-rules|durable-runner|headless-local/;
+const DORMANT =
+  /conversation-log|run-rules|run-facts|durable-runner|headless-local/;
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -69,6 +70,7 @@ describe('the trace itself can see a dormant module (positive control)', () => {
   it.each([
     ['conversation-log', './src/server/conversation-log.ts'],
     ['run-rules', './src/server/run-rules.ts'],
+    ['run-facts', './src/server/run-facts.ts'],
     ['durable-runner', './src/server/durable-runner.ts'],
     ['headless-local', './src/server/headless-local.ts'],
   ])(
@@ -171,8 +173,8 @@ describe('importing the headless adapter on purpose has no side effect (D7, D8)'
       'COPILOTKIT_TELEMETRY_DISABLED',
       'DO_NOT_TRACK',
     ]);
-    // The application modules it loaded: the adapter, the runner with its log
-    // and rules, the guard, headless.ts (for currentTurnText) and the shared
+    // The application modules it loaded: the adapter, the runner with its log,
+    // rules and read-only facts, the guard, headless.ts (for currentTurnText) and the shared
     // voice prefix. No store, workspace, platform, app, voice, scheduler or
     // entry point, so no database is opened and no table can be created.
     const own = `${pathToFileURL(join(root, 'src')).href}/`;
@@ -185,6 +187,7 @@ describe('importing the headless adapter on purpose has no side effect (D7, D8)'
       'server/durable-runner.ts',
       'server/headless-local.ts',
       'server/headless.ts',
+      'server/run-facts.ts',
       'server/run-rules.ts',
       'server/telemetry-guard.ts',
       'shared/voice-receipt.ts',

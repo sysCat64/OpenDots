@@ -15,7 +15,10 @@ export function installNetworkGuard(): void {
     this: net.Socket,
     ...args: unknown[]
   ) {
-    const first = args[0] as
+    // net.connect() and the HTTP agent hand over an already normalised
+    // [options, callback] pair, not the options themselves.
+    const head = Array.isArray(args[0]) ? args[0][0] : args[0];
+    const first = head as
       { host?: string; port?: number; path?: string } | number | string;
     const host =
       typeof first === 'object' && first !== null

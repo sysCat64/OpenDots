@@ -371,6 +371,40 @@ describe('finalizeRunEvents (the stock finalizer recovery builds on)', () => {
     expect(types(finalize(reasoning))).toEqual(['RUN_ERROR']);
   });
 
+  // C4c (run-facts.ts) tells a stock closer from a recorded result by exactly
+  // these two shapes. If the SDK changes them, a closer would be classified as
+  // a recorded result and counted as a known outcome, so the shapes are pinned.
+  it('writes the two closer shapes run-facts recognises: messageId <id>-result and a status/reason content', () => {
+    const missing = finalize(call('t1', 1), {
+      interruptionMessage: INTERRUPTED,
+    })[0] as unknown as Record<string, unknown>;
+    expect(missing).toMatchObject({
+      type: 'TOOL_CALL_RESULT',
+      toolCallId: 't1',
+      messageId: 't1-result',
+      role: 'tool',
+    });
+    expect(JSON.parse(missing.content as string)).toEqual({
+      status: 'error',
+      reason: 'missing_terminal_event',
+      message: expect.any(String),
+    });
+    const stopped = finalize(call('t2', 1), {
+      stopRequested: true,
+    }).find((event) => event.type === 'TOOL_CALL_RESULT') as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(stopped).toMatchObject({
+      messageId: 't2-result',
+      toolCallId: 't2',
+    });
+    expect(JSON.parse(stopped.content as string)).toMatchObject({
+      status: 'stopped',
+      reason: 'stop_requested',
+    });
+  });
+
   it('is a no-op once a terminal event was observed', () => {
     expect(
       finalize([...text('m', true), { type: 'RUN_FINISHED' } as BaseEvent]),

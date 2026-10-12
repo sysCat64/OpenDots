@@ -31,6 +31,7 @@ import {
   recoveryEvents,
   type RecoveryKind,
 } from './run-rules.js';
+import { RunFacts } from './run-facts.js';
 
 // A durable AgentRunner over the local conversation log. Every event of a run
 // is written to the log and committed before any subscriber sees it (policy W1:
@@ -257,12 +258,22 @@ export class DurableAgentRunner extends AgentRunner {
   >();
   private readonly viewRepairLogged = new Set<string>();
   private storageReady = false;
+  // Read-only facts about runs (C4c): what is durable and what this process is
+  // driving. Not admission: only run() admits a run, and a fact read can be out
+  // of date the moment it is returned. The accessors write nothing, recover
+  // nothing and create no schema, so reading them has no effect on the runner.
+  readonly facts: RunFacts;
 
   constructor(options: DurableRunnerOptions) {
     super();
     this.log = options.log;
     this.clientExecutableToolNames = options.clientExecutableToolNames;
     this.ownership = options.ownsThread;
+    this.facts = new RunFacts(this.log, {
+      active: this.active,
+      ownsThread: (threadId, agentId) => this.ownsThread(threadId, agentId),
+      clientExecutableToolNames: this.clientExecutableToolNames,
+    });
   }
 
   // ------------------------------------------------------------- initialization
