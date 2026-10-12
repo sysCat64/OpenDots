@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BaseEvent, Message } from '@ag-ui/core';
 import type { ReadyResult } from '../../src/server/durable-runner';
+import { egressGuardArgs } from '../helpers/egress';
 import {
   createThrowawayDatabase,
   openThrowawayDatabase,
@@ -110,7 +111,7 @@ export function start(
 ): ChildHandle {
   const child = spawn(
     process.execPath,
-    ['--import', 'tsx', CHILD, mode, db, ...args],
+    [...egressGuardArgs, '--import', 'tsx', CHILD, mode, db, ...args],
     {
       cwd: root,
       // No DATABASE_PATH discovery: the decoy proves the environment is not read.

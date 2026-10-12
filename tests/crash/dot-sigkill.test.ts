@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openWitness, readWitness, tuple } from '../helpers/dot-fence-fixture';
+import { egressGuardArgs } from '../helpers/egress';
 import { openThrowawayDatabase } from '../helpers/throwaway-db';
 import type { DotChildSpec } from './dot-child';
 import {
@@ -37,15 +38,19 @@ afterEach(() => {
 });
 
 function spawnChild(args: string[]) {
-  const child = spawn(process.execPath, ['--import', 'tsx', CHILD, ...args], {
-    cwd: root,
-    env: {
-      PATH: process.env.PATH ?? '',
-      ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
-      DATABASE_PATH: DECOY_DATABASE,
+  const child = spawn(
+    process.execPath,
+    [...egressGuardArgs, '--import', 'tsx', CHILD, ...args],
+    {
+      cwd: root,
+      env: {
+        PATH: process.env.PATH ?? '',
+        ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
+        DATABASE_PATH: DECOY_DATABASE,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  );
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (c) => (stdout += c));

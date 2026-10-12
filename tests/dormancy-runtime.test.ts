@@ -15,6 +15,7 @@ import { Store } from '../src/server/store';
 import { WorkspaceStore } from '../src/server/workspace';
 import { startCounter, type Counter } from './helpers/counting-server';
 import { OWNER_ID, randomToken, spawnServer } from './helpers/server-entry';
+import { egressGuardArgs } from './helpers/egress';
 import { createThrowawayDatabase } from './helpers/throwaway-db';
 
 // DORM-2 and DORM-3 (docs/LOCAL_FIRST_C4_LANDING_BOUNDARY.md, section 19,
@@ -80,6 +81,7 @@ describe('the trace itself can see a dormant module (positive control)', () => {
       const result = spawnSync(
         process.execPath,
         [
+          ...egressGuardArgs,
           '--import',
           'tsx',
           '--input-type=module',
@@ -139,7 +141,14 @@ describe('importing the headless adapter on purpose has no side effect (D7, D8)'
       `;
     const result = spawnSync(
       process.execPath,
-      ['--import', 'tsx', '--input-type=module', '--eval', script],
+      [
+        ...egressGuardArgs,
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '--eval',
+        script,
+      ],
       {
         cwd: root,
         encoding: 'utf8',
