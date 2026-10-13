@@ -43,12 +43,50 @@ function freezeForever(marker: string, detail: Record<string, unknown>): never {
   throw new Error('unreachable');
 }
 
+// A connection that calls `onInsert` right after an INSERT INTO
+// conversation_events that runs inside an open transaction, while `when()` holds.
+// The callback never returns (it freezes the process for the parent's SIGKILL),
+// so the transaction is open when the process dies.
+function freezeAfterInsert(
+  raw: DatabaseSync,
+  when: () => boolean,
+  onInsert: () => never,
+): DatabaseSync {
+  return new Proxy(raw, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property !== 'prepare')
+        return typeof value === 'function' ? value.bind(target) : value;
+      return (sql: string) => {
+        const statement = target.prepare(sql);
+        if (!/^\s*INSERT INTO conversation_events/.test(sql)) return statement;
+        return new Proxy(statement, {
+          get(inner, key) {
+            const member = Reflect.get(inner, key, inner);
+            if (key !== 'run')
+              return typeof member === 'function' ? member.bind(inner) : member;
+            return (...args: unknown[]) => {
+              const result = (inner.run as (...a: unknown[]) => unknown)(
+                ...args,
+              );
+              if (target.isTransaction && when()) onInsert();
+              return result;
+            };
+          },
+        });
+      };
+    },
+  });
+}
+
 class GateLog extends ConversationLog {
   constructor(
     db: DatabaseSync,
     private readonly scenario: Scenario,
     private readonly marker: string,
     private readonly enabled: boolean,
+    // Called just before a multi-event append that ends with a terminal event.
+    private readonly armTerminalTransaction: () => void = () => undefined,
   ) {
     super(db);
   }
@@ -61,6 +99,14 @@ class GateLog extends ConversationLog {
   override appendEvents(
     ...args: Parameters<ConversationLog['appendEvents']>
   ): StoredEvent[] {
+    const [, , events] = args;
+    if (
+      this.enabled &&
+      this.scenario.freeze.at === 'terminal-transaction' &&
+      events.length > 1 &&
+      events.some((e) => e.type === 'RUN_FINISHED' || e.type === 'RUN_ERROR')
+    )
+      this.armTerminalTransaction();
     const stored = super.appendEvents(...args);
     const { freeze } = this.scenario;
     if (
@@ -96,7 +142,22 @@ async function drive(scenarioName: string, dir: string, untilEnd: boolean) {
   if (!scenario) throw new Error(`unknown scenario ${scenarioName}`);
   const marker = join(dir, 'marker.json');
   const db = openThrowawayDatabase(dbPath);
-  const log = new GateLog(db, scenario, marker, !untilEnd);
+  let armed = false;
+  const log = new GateLog(
+    !untilEnd && scenario.freeze.at === 'terminal-transaction'
+      ? freezeAfterInsert(
+          db,
+          () => armed,
+          () => freezeForever(marker, { after: 'terminal-transaction' }),
+        )
+      : db,
+    scenario,
+    marker,
+    !untilEnd,
+    () => {
+      armed = true;
+    },
+  );
   const runner = newRunner(log);
   const reader = openThrowawayDatabase(dbPath);
   const context = {

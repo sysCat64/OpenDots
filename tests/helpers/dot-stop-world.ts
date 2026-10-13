@@ -2,6 +2,10 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { BaseEvent, Message, RunAgentInput } from '@ag-ui/core';
 import { DotAgent } from '../../src/server/dot-agent';
+import {
+  chatgptPlanProvider,
+  type ChatGPTPlanAuth,
+} from '../../src/server/chatgpt-plan';
 import { Store } from '../../src/server/store';
 import { WorkspaceStore } from '../../src/server/workspace';
 import { ConversationLog } from '../../src/server/conversation-log';
@@ -149,11 +153,23 @@ export interface World {
   close(): void;
 }
 
+// A fixture credential: the provider asks for a token and a model list, and the
+// fetch stub below never lets a request leave the process.
+const planAuth: ChatGPTPlanAuth = {
+  getAccessToken: async () => 'fixture-access-token-never-log',
+  listModels: async () => [{ slug: 'custom-model', displayName: 'Custom' }],
+};
+
 export function createWorld(
   options: {
     log?: (db: DatabaseSync) => ProbeLog;
     apiKey?: string;
     research?: boolean;
+    // The PRODUCTION ChatGPT-plan provider (the OpenAI Responses adapter wrapped
+    // by withSiwcToolCallFinishReason) instead of the API-key chat-completions
+    // one. The script is then asked for a Responses stream; its request body is
+    // the Responses `input` form, not `messages`.
+    plan?: boolean;
   } = {},
 ): World {
   const t = createThrowawayDatabase();
@@ -218,7 +234,7 @@ export function createWorld(
       hooks.onExecutor?.('entered', 1);
       return hooks.onBrowse(init ?? {});
     }
-    if (!url.endsWith('/chat/completions'))
+    if (!url.endsWith('/chat/completions') && !url.endsWith('/responses'))
       throw new Error(`unexpected fetch ${url}`);
     const body = JSON.parse(
       String(init?.body ?? (input as { body?: string }).body ?? '{}'),
@@ -263,6 +279,14 @@ export function createWorld(
           runtimeUrl: '',
           voiceName: 'marin',
           slackUsers: [],
+          ...(options.plan
+            ? {
+                modelProvider: chatgptPlanProvider({
+                  auth: planAuth,
+                  model: 'custom-model',
+                }),
+              }
+            : {}),
         },
         dot.id,
       );

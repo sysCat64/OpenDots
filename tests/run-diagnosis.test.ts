@@ -625,18 +625,24 @@ describe('terminal runs are inspected too (integrity and effect evidence)', () =
     ]);
   });
 
-  it('an agent-emitted terminal beside a pending server call is a legitimate shape that leaves the outcome unrecorded', async () => {
+  it('a HISTORICAL terminal beside a pending server call is a legitimate shape that leaves the outcome unrecorded', async () => {
     const h = make();
-    const agent = new ScriptedAgent(() => [
-      ...textMessage('a1', 'checking'),
-      ...toolCall('c1', SERVER_TOOL, 'a1'),
-      {
-        type: 'RUN_ERROR',
-        message: 'provider failed',
-        code: 'PROVIDER_FAILED',
-      },
-    ]);
-    await runToEnd(h.runner, agent, runInput(T, 'r1', [user('u1', 'go')]));
+    // Written before the terminal commit recorded the unknown outcome (A): a
+    // terminal run is never rewritten, so the shape is still diagnosed.
+    put(
+      h,
+      'r1',
+      [
+        ...textEvents('a1', true, 'checking'),
+        ...callEvents('c1', SERVER_TOOL, 1),
+        ev({
+          type: 'RUN_ERROR',
+          message: 'provider failed',
+          code: 'PROVIDER_FAILED',
+        }),
+      ],
+      { status: 'error' },
+    );
     expect(h.log.getRun(T, 'r1')?.status).toBe('error');
     // The facts call this thread idle and the next turn is admitted.
     expect(h.runner.facts.threadState(T, AGENT_ID).state).toBe('idle');
@@ -652,6 +658,34 @@ describe('terminal runs are inspected too (integrity and effect evidence)', () =
     const thread = await diagnoseThread(h);
     expect(thread.integrity.state).toBe('consistent');
     expect(thread.effectEvidence.state).toBe('gaps');
+  });
+
+  it('a NEW agent-emitted terminal beside a pending server call records the unknown outcome with it', async () => {
+    const h = make();
+    const agent = new ScriptedAgent(() => [
+      ...textMessage('a1', 'checking'),
+      ...toolCall('c1', SERVER_TOOL, 'a1'),
+      {
+        type: 'RUN_ERROR',
+        message: 'provider failed',
+        code: 'PROVIDER_FAILED',
+      },
+    ]);
+    await runToEnd(h.runner, agent, runInput(T, 'r1', [user('u1', 'go')]));
+    expect(h.log.getRun(T, 'r1')?.status).toBe('error');
+    expect(h.runner.facts.threadState(T, AGENT_ID).state).toBe('idle');
+    const d = await diagnoseRun(h, 'r1');
+    // Recorded as unknown (never as success): the gap is closed, the
+    // uncertainty is not.
+    expect(d.findings).toEqual([
+      {
+        code: 'server_outcome_unknown_marker',
+        severity: 'info',
+        runId: 'r1',
+        toolCallId: 'c1',
+      },
+    ]);
+    expect(d.toolLifecycle.calls[0].knowledge).toBe('unknown');
   });
 
   it('a terminal run that ends with an unanswered client call or an open message is reported', async () => {

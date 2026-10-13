@@ -22,6 +22,7 @@ import {
   DuplicateRunError,
   RunNotRunningError,
   type RunRow,
+  type StoredEvent,
   type TerminalStatus,
 } from './conversation-log.js';
 import {
@@ -476,11 +477,24 @@ export class DurableAgentRunner extends AgentRunner {
       return;
     }
     const terminal = isTerminal(event);
-    let stored;
+    let stored: StoredEvent[];
     try {
-      stored = this.log.appendEvent(threadId, state.runId, event, {
+      // A terminal event is never committed beside a server tool call that
+      // may have entered its executor and has no durable result (see
+      // unknownOutcomeEvents). The markers, the terminal event and the status
+      // are one append, so none of them is ever durable without the others.
+      const markers = terminal ? this.unknownOutcomeEvents(state.events) : [];
+      const options = {
         status: terminal ? this.terminalStatus(state, event) : undefined,
-      });
+      };
+      stored = markers.length
+        ? this.log.appendEvents(
+            threadId,
+            state.runId,
+            [...markers, event],
+            options,
+          )
+        : [this.log.appendEvent(threadId, state.runId, event, options)];
     } catch (error) {
       state.failure = error;
       try {
@@ -491,8 +505,12 @@ export class DurableAgentRunner extends AgentRunner {
       throw error;
     }
     this.publishStart(state);
-    state.events.push(stored.event);
-    state.subject.next(stored.event);
+    // Committed in order, published in order: the markers precede the terminal
+    // event on the stream exactly as they do in the log.
+    for (const item of stored) {
+      state.events.push(item.event);
+      state.subject.next(item.event);
+    }
   }
 
   private terminalStatus(state: ActiveRun, event: BaseEvent): TerminalStatus {
@@ -506,24 +524,58 @@ export class DurableAgentRunner extends AgentRunner {
     state.subject.next(state.persistedStart);
   }
 
-  // A failure or a stop can end a run after a server executor was entered and
-  // before its result was recorded (a failed write of the result, a dropped
-  // stream, a stop while the executor ran). The stock finalizer closes such a call
-  // with an "error" or "stopped" result, which reads as "it did not run". The tool
-  // may have run, so the call gets the same unknown-outcome result recovery writes
-  // (run-rules.ts), and nothing retries it. Only ended, unresolved, non-client
-  // calls are listed as pending: an already durable result, a client (HITL) call
-  // and a call whose arguments were still streaming (the fence guarantees its
-  // executor cannot have run) keep what they have.
-  private keepUnknownOutcome(
-    events: readonly BaseEvent[],
-    closers: BaseEvent[],
-  ): BaseEvent[] {
-    const pending = new Set(
+  // The server tool calls of a run that may have entered their executor and
+  // have no durable result. A tool call is only ever recorded as "unknown"
+  // here, never as a success and never as a failure: the log cannot tell a call
+  // whose executor never started from one whose effect committed and whose
+  // result was lost, and a stop, an abort or a provider failure proves neither.
+  // Only ended, unresolved, non-client calls are listed (classifyRun): an
+  // already durable result, a client (HITL) call (its result comes from the
+  // user, not from an executor) and a call whose arguments were still streaming
+  // (the A1 fence guarantees its executor cannot have run) keep what they have.
+  private pendingServerCallIds(events: readonly BaseEvent[]): Set<string> {
+    return new Set(
       classifyRun(events, this.clientExecutableToolNames).pendingServer.map(
         (call) => call.toolCallId,
       ),
     );
+  }
+
+  // The same result recovery writes (run-rules.ts), byte for byte.
+  private unknownOutcomeEvent(toolCallId: string): BaseEvent {
+    return {
+      type: 'TOOL_CALL_RESULT',
+      toolCallId,
+      messageId: `${toolCallId}-unknown-outcome`,
+      role: 'tool',
+      content: UNKNOWN_OUTCOME_CONTENT,
+    } as unknown as BaseEvent;
+  }
+
+  // A (terminal commit). What must be committed together with a terminal event
+  // that is about to be appended to `events`: one unknown-outcome result per
+  // pending server call, in the order the calls started. Nothing is executed,
+  // retried or invented, and a run with no pending server call gets nothing.
+  private unknownOutcomeEvents(events: readonly BaseEvent[]): BaseEvent[] {
+    return [...this.pendingServerCallIds(events)].map((id) =>
+      this.unknownOutcomeEvent(id),
+    );
+  }
+
+  // A' (no terminal event). A failure, a user stop, and a stream that simply
+  // ended (the agent aborting itself on its timer or its watcher) can end a run
+  // after a server executor was entered and before its result was recorded. The
+  // stock finalizer closes such a call with an "error" or "stopped" result,
+  // which reads as "it did not run". The call gets the unknown-outcome result
+  // instead. This does not depend on why the run ended.
+  private keepUnknownOutcome(
+    events: readonly BaseEvent[],
+    closers: BaseEvent[],
+  ): BaseEvent[] {
+    // Nothing to rewrite (a run that ended with its own terminal event): no
+    // need to classify the run again.
+    if (!closers.length) return closers;
+    const pending = this.pendingServerCallIds(events);
     if (!pending.size) return closers;
     return closers.map((event) => {
       const stored = loose(event);
@@ -532,13 +584,7 @@ export class DurableAgentRunner extends AgentRunner {
       return stored.type === 'TOOL_CALL_RESULT' &&
         toolCallId !== undefined &&
         pending.has(toolCallId)
-        ? ({
-            type: 'TOOL_CALL_RESULT',
-            toolCallId,
-            messageId: `${toolCallId}-unknown-outcome`,
-            role: 'tool',
-            content: UNKNOWN_OUTCOME_CONTENT,
-          } as unknown as BaseEvent)
+        ? this.unknownOutcomeEvent(toolCallId)
         : event;
     });
   }
@@ -562,14 +608,14 @@ export class DurableAgentRunner extends AgentRunner {
           ? { interruptionMessage: interruption }
           : {}),
       });
-      // A failure or a user stop can end a run while a server executor may have
-      // run: the stop is a flag, an executor already entered runs to completion
-      // and its result is not recorded. Run status (`stopped`) and tool outcome
-      // are independent, so the call is recorded as unknown, never as "stopped".
-      const appended =
-        interruption !== undefined || state.stopRequested
-          ? this.keepUnknownOutcome(state.events, closers)
-          : closers;
+      // Whatever ended the run, a server executor may have run: a stop is a
+      // flag (an executor already entered runs to completion and its result is
+      // not recorded), and an agent's own abort ends the stream with neither a
+      // failure nor a stop request. Run status (`stopped`, `error`) and tool
+      // outcome are independent, so such a call is recorded as unknown, never
+      // as "stopped" or as an error. The stock finalizer returns no closer once
+      // a terminal event was observed, so this only rewrites closers that exist.
+      const appended = this.keepUnknownOutcome(state.events, closers);
       if (appended.length) {
         const last = appended[appended.length - 1];
         // One transaction for the closers, the terminal event and the status.

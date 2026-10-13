@@ -42,7 +42,11 @@ export type Freeze =
   // Right after the commit of the first event that matches.
   | { at: 'event'; type: string }
   // Inside the script itself (after a side effect).
-  | { at: 'script' };
+  | { at: 'script' }
+  // Inside the transaction of a multi-event append that ends with a terminal
+  // event, after its first insert and before it commits (the process dies with
+  // the transaction open).
+  | { at: 'terminal-transaction' };
 
 export interface Scenario {
   tools: string[];
@@ -188,6 +192,35 @@ export const SCENARIOS: Record<string, Scenario> = {
       { type: 'STATE_SNAPSHOT', snapshot: { step: 1 } },
       HANG,
       finished(input),
+    ],
+  },
+  // A + A': a server call is complete (END durable) and the producer then fails
+  // the run. The terminal commit carries the unknown-outcome marker. Killed
+  // right after that one commit.
+  'provider-error-after-end': {
+    tools: [],
+    freeze: { at: 'event', type: 'RUN_ERROR' },
+    script: () => [
+      ...toolCall('c1', SERVER_TOOL, 'a1'),
+      {
+        type: 'RUN_ERROR',
+        message: 'the provider failed after the call was complete',
+        code: 'PROVIDER_FAILED',
+      },
+    ],
+  },
+  // The same run, killed INSIDE the commit of [marker, RUN_ERROR]: the whole
+  // append must be gone, so recovery sees the run exactly as it was at END.
+  'provider-error-after-end-mid-commit': {
+    tools: [],
+    freeze: { at: 'terminal-transaction' },
+    script: () => [
+      ...toolCall('c1', SERVER_TOOL, 'a1'),
+      {
+        type: 'RUN_ERROR',
+        message: 'the provider failed after the call was complete',
+        code: 'PROVIDER_FAILED',
+      },
     ],
   },
   // The cache window: the run is complete and durable, its view not yet written.
